@@ -23,6 +23,7 @@
     "test:coverage": "jest --coverage",
     "lint": "eslint src/ --ext .ts",
     "typecheck": "tsc --noEmit",
+    "prepare": "tsup",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -43,12 +44,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shanehamilton/llm-prompt-guard.git"
+    "url": "https://github.com/shanemhamilton/llm-prompt-guard.git"
   },
   "bugs": {
-    "url": "https://github.com/shanehamilton/llm-prompt-guard/issues"
+    "url": "https://github.com/shanemhamilton/llm-prompt-guard/issues"
   },
-  "homepage": "https://github.com/shanehamilton/llm-prompt-guard#readme",
+  "homepage": "https://github.com/shanemhamilton/llm-prompt-guard#readme",
   "engines": {
     "node": ">=16.0.0"
   },
