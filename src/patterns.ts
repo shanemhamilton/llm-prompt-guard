@@ -256,6 +256,21 @@ export const BUILTIN_PATTERNS: InjectionPattern[] = [
 ];
 
 /**
+ * Leetspeak-to-ASCII mapping for normalization.
+ * Maps common digit/symbol substitutions back to their letter equivalents.
+ */
+export const LEET_MAP: Record<string, string> = {
+  "0": "o",
+  "1": "i",
+  "3": "e",
+  "4": "a",
+  "5": "s",
+  "7": "t",
+  "@": "a",
+  $: "s",
+};
+
+/**
  * Return a copy of `regex` with the global (`g`) flag set.
  * If already global, returns the original instance.
  */

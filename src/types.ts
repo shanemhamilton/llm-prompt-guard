@@ -149,6 +149,75 @@ export interface Logger {
 }
 
 /**
+ * A flag raised by output validation, indicating a potential issue.
+ */
+export interface OutputFlag {
+  /** The type of issue detected. */
+  type:
+    | "canary_leak"
+    | "system_prompt_leak"
+    | "pii_detected"
+    | "behavioral_anomaly";
+  /** How severe the flag is. */
+  severity: "high" | "medium";
+  /** Human-readable explanation of the flag. */
+  detail: string;
+  /** The substring that triggered the flag (when available). */
+  matchedText?: string;
+}
+
+/**
+ * Result of validating LLM output.
+ */
+export interface OutputValidationResult {
+  /** `true` if no flags were raised. */
+  safe: boolean;
+  /** All flags raised during validation. */
+  flags: OutputFlag[];
+}
+
+/**
+ * Configuration for PII detection in output validation.
+ * Each key enables/disables a specific PII category.
+ */
+export interface PiiConfig {
+  /** Detect email addresses. Default: false. */
+  emails?: boolean;
+  /** Detect phone numbers. Default: false. */
+  phones?: boolean;
+  /** Detect US Social Security Numbers. Default: false. */
+  ssns?: boolean;
+  /** Detect API keys (sk-*, AKIA*, ghp_*). Default: false. */
+  apiKeys?: boolean;
+  /** Detect credit card numbers (Luhn-validated). Default: false. */
+  creditCards?: boolean;
+  /** Additional custom regex patterns to detect. */
+  custom?: RegExp[];
+}
+
+/**
+ * Configuration for the output validator.
+ */
+export interface OutputValidatorConfig {
+  /** Canary tokens to check for in LLM output. */
+  canaryTokens?: string[];
+  /** PII detection configuration. Disabled by default (opt-in per type). */
+  pii?: PiiConfig;
+  /** Check for system prompt leakage patterns. Default: true. */
+  systemPromptLeakage?: boolean;
+  /** Check for behavioral anomaly patterns. Default: true. */
+  behavioralAnomalies?: boolean;
+}
+
+/**
+ * Output validator instance returned by `createOutputValidator()`.
+ */
+export interface OutputValidator {
+  /** Validate LLM output for potential issues. */
+  validate(output: string): OutputValidationResult;
+}
+
+/**
  * Global configuration options for the guard.
  */
 export interface GuardConfig {
@@ -158,4 +227,6 @@ export interface GuardConfig {
   extraPatterns?: InjectionPattern[];
   /** Built-in pattern categories to disable (e.g., ["confidence-manipulation"]). */
   disableCategories?: string[];
+  /** Output validation configuration. */
+  outputValidation?: OutputValidatorConfig;
 }

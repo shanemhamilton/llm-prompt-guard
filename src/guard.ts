@@ -4,6 +4,8 @@ import type {
   InjectionPattern,
   InjectionTag,
   Logger,
+  OutputValidationResult,
+  OutputValidatorConfig,
   SanitizationMode,
   SanitizationResult,
 } from "./types";
@@ -11,9 +13,11 @@ import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
   INVISIBLE_CHARS,
+  LEET_MAP,
   NEUTRALIZATION_MAP,
   ensureGlobalFlag,
 } from "./patterns";
+import { createOutputValidator, generateCanary } from "./output";
 
 /** No-op logger used when the caller does not provide one. */
 const SILENT_LOGGER: Logger = {
@@ -59,6 +63,9 @@ const DEFAULT_CLOSE_TAG = "</untrusted_input>";
 export function createGuard(config: GuardConfig = {}) {
   const log: Logger = config.logger ?? SILENT_LOGGER;
   const patterns = buildPatternList(config);
+  const outputValidator = config.outputValidation
+    ? createOutputValidator(config.outputValidation)
+    : null;
 
   return {
     /**
@@ -101,6 +108,30 @@ export function createGuard(config: GuardConfig = {}) {
      */
     getPatterns(): ReadonlyArray<InjectionPattern> {
       return patterns;
+    },
+
+    /**
+     * Generate a unique canary token to embed in system prompts.
+     * If found in LLM output, it indicates the injection succeeded.
+     */
+    generateCanary(): string {
+      return generateCanary();
+    },
+
+    /**
+     * Validate LLM output for signs of successful injection.
+     *
+     * @param output  - The LLM's response text.
+     * @param options - Per-call config override. Falls back to guard-level config.
+     */
+    validateOutput(
+      output: string,
+      options?: OutputValidatorConfig
+    ): OutputValidationResult {
+      const validator = options
+        ? createOutputValidator(options)
+        : outputValidator ?? createOutputValidator({});
+      return validator.validate(output);
     },
   };
 }
@@ -191,14 +222,55 @@ function safeToString(input: unknown): string | null {
 }
 
 /**
- * Normalize Unicode to defeat invisible-character and homoglyph attacks.
- *
- * 1. Strip invisible Unicode characters (zero-width spaces, soft hyphens, etc.)
- * 2. Apply NFKD decomposition (maps many visual lookalikes to base characters)
- * 3. Strip combining diacritical marks left over from NFKD
- * 4. Map common Cyrillic/Greek homoglyphs to ASCII Latin equivalents
+ * Try to decode a base64 string. Works in both browser (atob) and Node (Buffer).
+ * Returns the decoded string if it's ASCII-printable and ≥4 chars, else null.
  */
-function normalizeUnicode(input: string): string {
+function tryBase64Decode(segment: string): string | null {
+  try {
+    let decoded: string;
+    if (typeof atob === "function") {
+      decoded = atob(segment);
+    } else if (typeof Buffer !== "undefined") {
+      decoded = Buffer.from(segment, "base64").toString("latin1");
+    } else {
+      return null;
+    }
+    // Only keep ASCII-printable results ≥4 chars
+    if (decoded.length < 4) return null;
+    if (!/^[\x20-\x7E]+$/.test(decoded)) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Apply ROT13 to a string (letters only, preserves case).
+ */
+function rot13(input: string): string {
+  return input.replace(/[A-Za-z]/g, (ch) => {
+    const base = ch <= "Z" ? 65 : 97;
+    return String.fromCharCode(((ch.charCodeAt(0) - base + 13) % 26) + base);
+  });
+}
+
+/**
+ * Normalize input for detection — defeats encoding, obfuscation, and evasion attacks.
+ *
+ * Steps 1-4:  (existing) Invisible chars → NFKD → diacritics → homoglyphs
+ * Step 5:     URL-decode %XX sequences (in-place)
+ * Step 6:     Collapse character-splitting separators (in-place)
+ * Step 7:     Leetspeak normalization (in-place)
+ * Step 8:     Detect & append Base64-decoded content (append)
+ * Step 9:     Append ROT13 of normalized text (append)
+ * Step 10:    Append reversed normalized text (append)
+ */
+/**
+ * Returns { inPlace, detection } where:
+ * - `inPlace` is the text after all in-place transformations (steps 1-8) — safe for excise/neutralize
+ * - `detection` is the full string with appended variants (steps 9-11) — used for pattern matching only
+ */
+function normalizeForDetection(input: string): { inPlace: string; detection: string } {
   // Step 1: Strip invisible characters
   let result = input.replace(INVISIBLE_CHARS, "");
 
@@ -211,7 +283,6 @@ function normalizeUnicode(input: string): string {
   result = result.replace(/[\u0300-\u036F]/g, "");
 
   // Step 4: Map common Cyrillic/Greek homoglyphs to Latin equivalents.
-  // These are the most frequently used in adversarial attacks.
   const HOMOGLYPH_MAP: Record<string, string> = {
     "\u0430": "a", // Cyrillic а
     "\u0435": "e", // Cyrillic е
@@ -243,7 +314,60 @@ function normalizeUnicode(input: string): string {
     (ch) => HOMOGLYPH_MAP[ch] ?? ch
   );
 
-  return result;
+  // Step 5: URL-decode %XX sequences
+  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+
+  // Step 6: Collapse character-splitting separators
+  // Matches sequences like "i.g.n.o.r.e" or "1.g.n.0.r.3" (single alphanumeric chars
+  // with consistent delimiter, ≥4 chars total)
+  result = result.replace(
+    /([A-Za-z0-9])([.\-_])([A-Za-z0-9])(?:\2[A-Za-z0-9]){2,}/g,
+    (match, _first, sep) => match.split(sep).join("")
+  );
+
+  // Step 7: Base64 detection — must happen BEFORE leetspeak (digits needed intact)
+  const base64Segments = result.match(
+    /[A-Za-z0-9+/]{16,}={0,2}/g
+  );
+  const decodedSegments: string[] = [];
+  if (base64Segments) {
+    for (const segment of base64Segments) {
+      const decoded = tryBase64Decode(segment);
+      if (decoded) {
+        decodedSegments.push(decoded);
+      }
+    }
+  }
+
+  // Save pre-leetspeak text (needed for patterns that use digit ranges)
+  const preLeetspeak = result;
+
+  // Step 8: Leetspeak normalization
+  result = result.replace(
+    /[0134578@$]/g,
+    (ch) => LEET_MAP[ch] ?? ch
+  );
+
+  // Save the in-place normalized result
+  const normalizedInPlace = result;
+
+  // Append pre-leetspeak text so digit-dependent patterns still match
+  result += " " + preLeetspeak;
+
+  // Step 9: Append Base64-decoded content
+  for (const decoded of decodedSegments) {
+    result += " " + decoded;
+  }
+
+  // Step 10: Append ROT13 of in-place-normalized text
+  result += " " + rot13(normalizedInPlace);
+
+  // Step 11: Append reversed in-place-normalized text
+  result += " " + normalizedInPlace.split("").reverse().join("");
+
+  return { inPlace: normalizedInPlace, detection: result };
 }
 
 // ── Mode implementations ─────────────────────────────────────────────
@@ -377,15 +501,15 @@ function sanitizeForPrompt(
     sanitized = cleaned;
   }
 
-  // Step 2: Normalize Unicode — strip invisible chars, decompose, map homoglyphs.
-  // We run detection on the normalized form to defeat bypass techniques,
-  // but keep the original (control-char-stripped) text for the output.
-  const normalized = normalizeUnicode(sanitized);
+  // Step 2: Normalize for detection — in-place transforms + appended variants.
+  // Detection runs against the full detection string; excise/neutralize use inPlace only.
+  const { inPlace: normalizedInPlace, detection: normalizedDetection } =
+    normalizeForDetection(sanitized);
 
-  // Step 3: Detect injection patterns on normalized text.
+  // Step 3: Detect injection patterns on full detection string.
   let hasHighSeverity = false;
   for (const { pattern, severity } of patterns) {
-    if (pattern.test(normalized)) {
+    if (pattern.test(normalizedDetection)) {
       patternsDetected++;
       if (severity === "high") {
         hasHighSeverity = true;
@@ -418,7 +542,7 @@ function sanitizeForPrompt(
 
         // Medium severity in block mode: neutralize (legacy compat).
         wasModified = true;
-        sanitized = neutralize(normalized);
+        sanitized = neutralize(normalizedInPlace);
       }
       break;
     }
@@ -433,7 +557,7 @@ function sanitizeForPrompt(
           severity: hasHighSeverity ? "high" : "medium",
         });
         wasModified = true;
-        sanitized = neutralize(normalized);
+        sanitized = neutralize(normalizedInPlace);
       }
       break;
     }
@@ -448,7 +572,7 @@ function sanitizeForPrompt(
           severity: hasHighSeverity ? "high" : "medium",
         });
         wasModified = true;
-        sanitized = excise(normalized, patterns);
+        sanitized = excise(normalizedInPlace, patterns);
       }
       break;
     }
@@ -559,9 +683,9 @@ function containsInjection(
   patterns: InjectionPattern[]
 ): boolean {
   if (!input) return false;
-  const normalized = normalizeUnicode(String(input));
+  const { detection } = normalizeForDetection(String(input));
   for (const { pattern } of patterns) {
-    if (pattern.test(normalized)) return true;
+    if (pattern.test(detection)) return true;
   }
   return false;
 }
@@ -571,10 +695,10 @@ function countPatterns(
   patterns: InjectionPattern[]
 ): number {
   if (!input) return 0;
-  const normalized = normalizeUnicode(String(input));
+  const { detection } = normalizeForDetection(String(input));
   let n = 0;
   for (const { pattern } of patterns) {
-    if (pattern.test(normalized)) n++;
+    if (pattern.test(detection)) n++;
   }
   return n;
 }
