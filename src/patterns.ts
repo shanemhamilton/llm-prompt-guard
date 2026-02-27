@@ -256,7 +256,19 @@ export const BUILTIN_PATTERNS: InjectionPattern[] = [
 ];
 
 /**
+ * Return a copy of `regex` with the global (`g`) flag set.
+ * If already global, returns the original instance.
+ */
+export function ensureGlobalFlag(regex: RegExp): RegExp {
+  if (regex.global) return regex;
+  return new RegExp(regex.source, regex.flags + "g");
+}
+
+/**
  * Keyword neutralization map used in "neutralize" mode.
+ *
+ * @deprecated Modern LLMs read through underscore mangling trivially.
+ * Prefer `mode: "excise"`, `"quarantine"`, or `"tag"` instead.
  *
  * Replaces injection keywords with mangled equivalents that break BPE
  * tokenization. The replacements intentionally break at non-standard
