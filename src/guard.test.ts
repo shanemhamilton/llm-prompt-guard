@@ -1081,7 +1081,7 @@ describe("spotlight()", () => {
 
   test("generates a unique nonce per call (100 calls → 100 unique)", () => {
     // Birthday-collision check: 48 bits of entropy is ample for 100
-    // draws. If this ever fails, randomBytes is broken.
+    // draws. If this ever fails, getRandomValues is broken.
     const delimiters = new Set<string>();
     for (let i = 0; i < 100; i++) {
       delimiters.add(spotlight("test").delimiter);

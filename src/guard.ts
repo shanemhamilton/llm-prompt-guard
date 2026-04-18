@@ -1,4 +1,3 @@
-import { randomBytes } from "crypto";
 import type {
   ExfilFinding,
   FieldConfig,
@@ -545,8 +544,14 @@ function spotlightInput(
   const sanitized = sanitizeResult.sanitized;
   // 12-char lowercase hex nonce from 6 bytes of randomness. Hex is
   // universally supported; 48 bits of entropy is ample for a per-call
-  // nonce whose lifetime is one LLM round-trip.
-  const delimiter = randomBytes(6).toString("hex");
+  // nonce whose lifetime is one LLM round-trip. Web Crypto
+  // getRandomValues is a global in every runtime this library supports
+  // (Node 20+, Bun, Deno, Cloudflare Workers, Vercel Edge, browsers).
+  const nonceBytes = new Uint8Array(6);
+  globalThis.crypto.getRandomValues(nonceBytes);
+  const delimiter = Array.from(nonceBytes, (b) =>
+    b.toString(16).padStart(2, "0")
+  ).join("");
   const wrapped = `<USER_INPUT_${delimiter}>${sanitized}</USER_INPUT_${delimiter}>`;
   return { wrapped, delimiter, sanitized };
 }
