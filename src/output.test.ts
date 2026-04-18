@@ -282,6 +282,21 @@ describe("PII detection", () => {
       const result = validator.validate("BADGE-1234 and CLEARANCE-TOP");
       expect(result.flags).toHaveLength(2);
     });
+
+    test("zero-length custom regex does not infinite-loop", () => {
+      // An empty-match regex `/(?:)/g` would normally loop forever on
+      // exec; the validator must guard against it. We pass a bounded
+      // custom pattern that matches empty strings and assert the call
+      // returns in a reasonable time with at least one flag.
+      const validator = createOutputValidator({
+        pii: { custom: [/(?:)/g] },
+      });
+      const result = validator.validate("abc");
+      // The empty pattern matches at every boundary; just assert we
+      // didn't hang and we got flags without crashing.
+      expect(result.flags.length).toBeGreaterThan(0);
+      expect(result.safe).toBe(false);
+    });
   });
 
   describe("PII disabled by default", () => {

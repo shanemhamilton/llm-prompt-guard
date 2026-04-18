@@ -1,9 +1,11 @@
 import type {
+  ExfilFinding,
   FieldConfig,
   GuardConfig,
   InjectionPattern,
   InjectionTag,
   Logger,
+  OutputScanResult,
   OutputValidationResult,
   OutputValidatorConfig,
   SanitizationMode,
@@ -13,6 +15,7 @@ import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
   INVISIBLE_CHARS,
+  INVISIBLE_CHARS_SUPPLEMENTARY,
   LEET_MAP,
   NEUTRALIZATION_MAP,
   ensureGlobalFlag,
@@ -27,6 +30,137 @@ const SILENT_LOGGER: Logger = {
 
 const DEFAULT_OPEN_TAG = "<untrusted_input>";
 const DEFAULT_CLOSE_TAG = "</untrusted_input>";
+
+// ── Output scanning (exfiltration-shape detection) ───────────────────
+
+/**
+ * Syntactic exfil-shape patterns. Unlike output *validation* (which
+ * looks at semantics — canary leaks, system prompt leakage, PII,
+ * behavioral anomalies), these patterns match on shape alone.
+ *
+ * - `base64-blob` — 120+ char run of base64 alphabet. Raised length
+ *   gate (over the detection pipeline's 16-char threshold) keeps the
+ *   false-positive rate low for genuine code/data payloads.
+ * - `markdown-image-with-query` — `![alt](https://foo.com/bar?qs)` —
+ *   a classic LLM-exfil vector where the attacker's URL fires a GET
+ *   request carrying stolen data the moment the rendered output hits
+ *   a browser.
+ * - `outbound-url` — any `http(s)://...` URL, minus hosts on the
+ *   caller's allowlist.
+ * - `data-url` — `data:...;base64,` embedded blobs.
+ * - `hex-blob` — 64+ hex characters (likely hash or long token).
+ */
+const EXFIL_PATTERNS: Array<{
+  type: ExfilFinding["type"];
+  pattern: RegExp;
+}> = [
+  { type: "base64-blob", pattern: /[A-Za-z0-9+/]{120,}={0,2}/g },
+  {
+    type: "markdown-image-with-query",
+    pattern: /!\[.*?\]\(https?:\/\/[^)]+\?[^)]+\)/g,
+  },
+  { type: "data-url", pattern: /data:[^;,]+;base64,/gi },
+  { type: "hex-blob", pattern: /[0-9a-fA-F]{64,}/g },
+  // Outbound URL last so more-specific patterns (markdown image, data URL)
+  // get first pick on their substrings.
+  { type: "outbound-url", pattern: /https?:\/\/[^\s)"'<>]+/g },
+];
+
+/**
+ * Case-insensitive hostname match against an allowlist.
+ *
+ * - Bare entry `"example.com"` matches the apex and every subdomain
+ *   (`example.com`, `api.example.com`, `www.example.com`), but NOT
+ *   `notexample.com` — the dot guard prevents suffix-only matches.
+ * - Cookie-style entry `".example.com"` matches subdomains only
+ *   (`api.example.com`, `www.example.com`), NOT the apex
+ *   `example.com`. Use this when you want the apex to remain flagged.
+ */
+function hostMatchesAllowlist(host: string, allowlist: string[]): boolean {
+  const lowerHost = host.toLowerCase();
+  for (const entry of allowlist) {
+    const lowerEntryRaw = entry.toLowerCase();
+    const subdomainOnly = lowerEntryRaw.startsWith(".");
+    const lowerEntry = subdomainOnly ? lowerEntryRaw.slice(1) : lowerEntryRaw;
+    if (!subdomainOnly && lowerHost === lowerEntry) return true;
+    if (lowerHost.endsWith("." + lowerEntry)) return true;
+  }
+  return false;
+}
+
+/**
+ * Extract the hostname from an outbound URL match. Returns null if the
+ * URL is unparseable — the caller should then treat it as a finding
+ * (the conservative choice for a defense-in-depth tool).
+ */
+function extractHost(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Scan LLM output for syntactic exfiltration-shape patterns.
+ *
+ * Complements `validateOutput` (semantic signals) with a syntactic
+ * sweep: if the response text *looks* like a base64 blob, a markdown
+ * image with querystring, an outbound URL, a data URL, or a long hex
+ * run, a finding is surfaced. Callers decide whether to block, strip,
+ * or log — `scanOutput` reports; it does not mutate.
+ *
+ * @param text - The LLM's raw response text.
+ * @param config - Optional config. Only `allowedOrigins` is honored here —
+ *   hosts on the allowlist bypass the `outbound-url` finding type.
+ */
+function scanOutputImpl(
+  text: string,
+  allowedOrigins: string[]
+): OutputScanResult {
+  const findings: ExfilFinding[] = [];
+  if (!text) return { safe: true, findings };
+
+  for (const { type, pattern } of EXFIL_PATTERNS) {
+    // Fresh regex per scan — we mutate lastIndex and callers may retain
+    // references; also tolerates non-global patterns defensively.
+    const global = pattern.global
+      ? new RegExp(pattern.source, pattern.flags)
+      : new RegExp(pattern.source, pattern.flags + "g");
+    let match: RegExpExecArray | null;
+    while ((match = global.exec(text)) !== null) {
+      const matched = match[0];
+
+      // Skip outbound URLs on the caller's allowlist.
+      if (type === "outbound-url") {
+        const host = extractHost(matched);
+        if (host !== null && hostMatchesAllowlist(host, allowedOrigins)) {
+          if (matched.length === 0) global.lastIndex++;
+          continue;
+        }
+      }
+
+      findings.push({
+        type,
+        preview: matched.slice(0, 60),
+        offset: match.index,
+      });
+
+      if (matched.length === 0) global.lastIndex++;
+    }
+  }
+
+  return { safe: findings.length === 0, findings };
+}
+
+/**
+ * Scan LLM output for syntactic exfiltration-shape patterns using
+ * default configuration (no allowlist). For per-host allowlisting, use
+ * `createGuard({ allowedOrigins }).scanOutput()`.
+ */
+export function scanOutput(text: string): OutputScanResult {
+  return scanOutputImpl(text, []);
+}
 
 /**
  * Create a prompt guard instance with the given configuration.
@@ -66,6 +200,10 @@ export function createGuard(config: GuardConfig = {}) {
   const outputValidator = config.outputValidation
     ? createOutputValidator(config.outputValidation)
     : null;
+  // Default to true in v2.0 — strips invisible chars / homoglyphs on the
+  // clean path so downstream LLM prompts never carry smuggled payloads.
+  const normalizeOutput = config.normalizeOutput !== false;
+  const allowedOrigins = config.allowedOrigins ?? [];
 
   return {
     /**
@@ -81,7 +219,14 @@ export function createGuard(config: GuardConfig = {}) {
       field: FieldConfig,
       userId?: string
     ): SanitizationResult {
-      return sanitizeForPrompt(input, field, patterns, log, userId);
+      return sanitizeForPrompt(
+        input,
+        field,
+        patterns,
+        log,
+        userId,
+        normalizeOutput
+      );
     },
 
     /**
@@ -132,6 +277,21 @@ export function createGuard(config: GuardConfig = {}) {
         ? createOutputValidator(options)
         : outputValidator ?? createOutputValidator({});
       return validator.validate(output);
+    },
+
+    /**
+     * Scan LLM output for syntactic exfiltration-shape patterns.
+     *
+     * Complements {@link validateOutput} (semantic signals) with a
+     * syntactic sweep: base64 blobs, markdown images with querystrings,
+     * outbound URLs, data URLs, and hex blobs. Hosts listed in
+     * `GuardConfig.allowedOrigins` are excluded from the `outbound-url`
+     * finding type.
+     *
+     * @param text - The LLM's raw response text.
+     */
+    scanOutput(text: string): OutputScanResult {
+      return scanOutputImpl(text, allowedOrigins);
     },
   };
 }
@@ -255,6 +415,60 @@ function rot13(input: string): string {
 }
 
 /**
+ * Non-lossy output normalization — safe for returning to callers.
+ *
+ * Only strips invisible characters (BMP + Plane 14 tag block + VS
+ * Supplement) and maps homoglyphs / NFKD-decomposed forms back to
+ * their ASCII / Latin equivalents. Does NOT apply leetspeak, URL
+ * decoding, separator collapse, or reversal — those are aggressive,
+ * lossy transforms that are correct for detection but would corrupt
+ * legitimate content containing numbers, URLs, or dots.
+ *
+ * Used by `sanitize()`'s clean path when `normalizeOutput !== false`.
+ */
+function normalizeForOutput(input: string): string {
+  // Strip BMP invisibles.
+  let result = input.replace(INVISIBLE_CHARS, "");
+  // Strip Plane 14 Tag block + Variation Selector Supplement.
+  result = result.replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+  // NFKD decomposition (fullwidth → ASCII, ﬁ → fi, accented base separate).
+  result = result.normalize("NFKD");
+  // Strip combining diacritical marks after NFKD.
+  result = result.replace(/[\u0300-\u036F]/g, "");
+  // Map Cyrillic / Greek homoglyphs to Latin — same table as detection.
+  const HOMOGLYPH_MAP_OUT: Record<string, string> = {
+    "\u0430": "a",
+    "\u0435": "e",
+    "\u043E": "o",
+    "\u0440": "p",
+    "\u0441": "c",
+    "\u0443": "y",
+    "\u0445": "x",
+    "\u0456": "i",
+    "\u0458": "j",
+    "\u04BB": "h",
+    "\u0410": "A",
+    "\u0412": "B",
+    "\u0415": "E",
+    "\u041A": "K",
+    "\u041C": "M",
+    "\u041D": "H",
+    "\u041E": "O",
+    "\u0420": "P",
+    "\u0421": "C",
+    "\u0422": "T",
+    "\u0425": "X",
+    "\u03BF": "o",
+    "\u03B1": "a",
+  };
+  result = result.replace(
+    /[\u0410-\u04BB\u03B1\u03BF]/g,
+    (ch) => HOMOGLYPH_MAP_OUT[ch] ?? ch
+  );
+  return result;
+}
+
+/**
  * Normalize input for detection — defeats encoding, obfuscation, and evasion attacks.
  *
  * Steps 1-4:  (existing) Invisible chars → NFKD → diacritics → homoglyphs
@@ -271,8 +485,36 @@ function rot13(input: string): string {
  * - `detection` is the full string with appended variants (steps 9-11) — used for pattern matching only
  */
 function normalizeForDetection(input: string): { inPlace: string; detection: string } {
-  // Step 1: Strip invisible characters
+  // Step 1a: Decode Plane 14 tag characters to their ASCII mirror BEFORE
+  // stripping. The Tag block (U+E0000–U+E007F) encodes the ASCII range
+  // (U+0020 = space through U+007F = DEL) one-for-one as invisible code
+  // points, so an attacker can smuggle `ignore previous instructions`
+  // in tag chars behind a visible decoy. LLMs tokenize the tag chars as
+  // the hidden ASCII, so the injection still fires — our detection must
+  // see the decoded form. We collect it into a side channel that will
+  // be appended to the detection string, keeping the in-place form free
+  // of smuggled payload.
+  const decodedTagSegments: string[] = [];
+  input.replace(/[\u{E0020}-\u{E007E}]+/gu, (match) => {
+    // Map each tag code point to its ASCII mirror (codepoint − 0xE0000).
+    let decoded = "";
+    for (const ch of match) {
+      const cp = ch.codePointAt(0);
+      if (cp !== undefined && cp >= 0xe0020 && cp <= 0xe007e) {
+        decoded += String.fromCharCode(cp - 0xe0000);
+      }
+    }
+    if (decoded.length > 0) decodedTagSegments.push(decoded);
+    return match;
+  });
+
+  // Step 1b: Strip invisible characters (BMP + Plane 14 tag block + VS Supplement)
+  // The two passes must both run: INVISIBLE_CHARS is a non-`u` regex covering BMP
+  // invisibles; INVISIBLE_CHARS_SUPPLEMENTARY is a `u`-flagged regex covering
+  // U+E0000–U+E007F (Tag block — steganographic ASCII smuggling) and
+  // U+E0100–U+E01EF (Variation Selector Supplement).
   let result = input.replace(INVISIBLE_CHARS, "");
+  result = result.replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
 
   // Step 2: NFKD decomposition — decomposes characters like "ﬁ" → "fi",
   // fullwidth letters → ASCII, and separates base chars from diacritics
@@ -344,9 +586,10 @@ function normalizeForDetection(input: string): { inPlace: string; detection: str
   // Save pre-leetspeak text (needed for patterns that use digit ranges)
   const preLeetspeak = result;
 
-  // Step 8: Leetspeak normalization
+  // Step 8: Leetspeak normalization. Character class matches only
+  // characters that have entries in LEET_MAP (see patterns.ts).
   result = result.replace(
-    /[0134578@$]/g,
+    /[013457@$]/g,
     (ch) => LEET_MAP[ch] ?? ch
   );
 
@@ -358,6 +601,13 @@ function normalizeForDetection(input: string): { inPlace: string; detection: str
 
   // Step 9: Append Base64-decoded content
   for (const decoded of decodedSegments) {
+    result += " " + decoded;
+  }
+
+  // Step 9b: Append Plane-14 tag-block decoded content so detection sees
+  // smuggled ASCII payloads (e.g., tag-encoded "ignore previous instructions")
+  // even though they were stripped from the in-place text.
+  for (const decoded of decodedTagSegments) {
     result += " " + decoded;
   }
 
@@ -386,8 +636,51 @@ function excise(normalized: string, patterns: InjectionPattern[]): string {
 }
 
 /**
+ * Generate a 12-char lowercase hex nonce via Web Crypto.
+ *
+ * Deliberately uses `globalThis.crypto.getRandomValues` (not Node's
+ * `crypto.randomBytes`) so the library runs unchanged on Node 20+,
+ * Bun, Deno, Cloudflare Workers, and modern browsers. The 48-bit
+ * nonce is collision-resistant for the threat model (per-request
+ * delimiter forgery), but must not be used for cryptographic ID
+ * generation.
+ */
+function generateDelimiterNonce(): string {
+  const bytes = new Uint8Array(6);
+  globalThis.crypto.getRandomValues(bytes);
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    out += bytes[i].toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+/**
+ * Apply a nonce suffix to a delimiter. We insert the nonce *before*
+ * the closing `>`/`]`/etc. so the tag remains structurally valid.
+ *
+ * For inputs like `<untrusted_input>` this produces `<untrusted_input_{nonce}>`.
+ * For `[[USER_INPUT]]` it produces `[[USER_INPUT_{nonce}]]`.
+ * For `</untrusted_input>` it produces `</untrusted_input_{nonce}>`.
+ * If the tag has no trailing bracket/angle, the nonce is appended.
+ */
+function applyNonceToTag(tag: string, nonce: string): string {
+  // Match a trailing run of closing brackets (>, ], }) so we insert
+  // the nonce just before them. Captures handle open/close forms.
+  const m = tag.match(/^(.*?)([>\])}]+)$/);
+  if (m !== null) {
+    return `${m[1]}_${nonce}${m[2]}`;
+  }
+  return `${tag}_${nonce}`;
+}
+
+/**
  * Quarantine mode: wrap original text in configurable delimiters.
  * Strips occurrences of the closing delimiter from user text to prevent breakout.
+ *
+ * When `quarantineOptions.randomizeDelimiters` is `true`, a fresh 12-hex
+ * nonce is appended to the base delimiters each call so an attacker who
+ * guesses the base tags still cannot forge the matching closing tag.
  */
 function quarantineInput(
   original: string,
@@ -396,10 +689,22 @@ function quarantineInput(
   log: Logger
 ): { wrapped: string; systemClause: string } {
   const opts = field.quarantineOptions ?? {};
-  const openTag = opts.openTag ?? DEFAULT_OPEN_TAG;
-  const closeTag = opts.closeTag ?? DEFAULT_CLOSE_TAG;
+  const baseOpenTag = opts.openTag ?? DEFAULT_OPEN_TAG;
+  const baseCloseTag = opts.closeTag ?? DEFAULT_CLOSE_TAG;
 
-  // Strip closing delimiter from user text to prevent breakout.
+  let openTag = baseOpenTag;
+  let closeTag = baseCloseTag;
+  if (opts.randomizeDelimiters) {
+    const nonce = generateDelimiterNonce();
+    openTag = applyNonceToTag(baseOpenTag, nonce);
+    closeTag = applyNonceToTag(baseCloseTag, nonce);
+  }
+
+  // Strip closing delimiter from user text to prevent breakout. With
+  // nonced delimiters, a pre-embedded fixed `</untrusted_input>` in the
+  // payload can't match the nonced closing tag, so this only removes
+  // actual nonced occurrences (rare — attacker would need to guess the
+  // nonce first).
   let safe = original.split(closeTag).join("");
 
   // Truncate unwrapped text to maxLength before wrapping.
@@ -460,7 +765,8 @@ function sanitizeForPrompt(
   field: FieldConfig,
   patterns: InjectionPattern[],
   log: Logger,
-  userId?: string
+  userId?: string,
+  normalizeOutput: boolean = true
 ): SanitizationResult {
   // Validate config to prevent silent bypass via NaN/negative maxLength.
   validateFieldConfig(field);
@@ -514,6 +820,34 @@ function sanitizeForPrompt(
       if (severity === "high") {
         hasHighSeverity = true;
       }
+    }
+  }
+
+  // Step 3b: Clean-path normalization (block/neutralize/excise modes only).
+  // When no injection patterns matched AND `normalizeOutput` is enabled
+  // (default in v2.0), we swap in the output-safe normalized form so
+  // invisible characters (BMP + Plane 14 tag block + VS Supplement) and
+  // homoglyphs are stripped from the returned string. We use the
+  // conservative `normalizeForOutput` (no leetspeak / URL-decode /
+  // separator-collapse) — those detection-only transforms would corrupt
+  // legitimate text like "line1" → "linei" or "42" → "a2".
+  //
+  // The detection path already runs on the full (aggressive) detection
+  // string, so this does not change what gets matched — only what the
+  // caller gets back.
+  //
+  // Opt out with `normalizeOutput: false` for byte-exact output on the
+  // clean path. Quarantine and tag modes preserve byte-exact input
+  // regardless of this flag (their contract is structural, not textual).
+  if (
+    normalizeOutput &&
+    patternsDetected === 0 &&
+    (mode === "block" || mode === "neutralize" || mode === "excise")
+  ) {
+    const normalizedForOutput = normalizeForOutput(sanitized);
+    if (normalizedForOutput !== sanitized) {
+      sanitized = normalizedForOutput;
+      wasModified = true;
     }
   }
 
