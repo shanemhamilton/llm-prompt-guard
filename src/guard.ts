@@ -67,16 +67,22 @@ const EXFIL_PATTERNS: Array<{
 ];
 
 /**
- * Case-insensitive suffix hostname match. `"example.com"` matches
- * `"example.com"`, `"api.example.com"`, and `"www.example.com"` —
- * but NOT `"notexample.com"` (the dot guard prevents that). An
- * exact match is also allowed.
+ * Case-insensitive hostname match against an allowlist.
+ *
+ * - Bare entry `"example.com"` matches the apex and every subdomain
+ *   (`example.com`, `api.example.com`, `www.example.com`), but NOT
+ *   `notexample.com` — the dot guard prevents suffix-only matches.
+ * - Cookie-style entry `".example.com"` matches subdomains only
+ *   (`api.example.com`, `www.example.com`), NOT the apex
+ *   `example.com`. Use this when you want the apex to remain flagged.
  */
 function hostMatchesAllowlist(host: string, allowlist: string[]): boolean {
   const lowerHost = host.toLowerCase();
   for (const entry of allowlist) {
-    const lowerEntry = entry.toLowerCase().replace(/^\./, "");
-    if (lowerHost === lowerEntry) return true;
+    const lowerEntryRaw = entry.toLowerCase();
+    const subdomainOnly = lowerEntryRaw.startsWith(".");
+    const lowerEntry = subdomainOnly ? lowerEntryRaw.slice(1) : lowerEntryRaw;
+    if (!subdomainOnly && lowerHost === lowerEntry) return true;
     if (lowerHost.endsWith("." + lowerEntry)) return true;
   }
   return false;
@@ -580,9 +586,10 @@ function normalizeForDetection(input: string): { inPlace: string; detection: str
   // Save pre-leetspeak text (needed for patterns that use digit ranges)
   const preLeetspeak = result;
 
-  // Step 8: Leetspeak normalization
+  // Step 8: Leetspeak normalization. Character class matches only
+  // characters that have entries in LEET_MAP (see patterns.ts).
   result = result.replace(
-    /[0134578@$]/g,
+    /[013457@$]/g,
     (ch) => LEET_MAP[ch] ?? ch
   );
 

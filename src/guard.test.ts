@@ -881,10 +881,34 @@ describe("BUILTIN_PATTERNS structure", () => {
     expect(categories).toContain("markup-injection");
   });
 
-  test(`has exactly ${BUILTIN_PATTERNS.length} patterns`, () => {
-    // Lock the pattern count to catch accidental additions/deletions.
-    // Update this number when intentionally changing the pattern set.
-    expect(BUILTIN_PATTERNS.length).toBe(BUILTIN_PATTERNS.length);
+  test("has exactly 44 patterns", () => {
+    // Pinned total. Update this number when intentionally changing the pattern set.
+    expect(BUILTIN_PATTERNS.length).toBe(44);
+  });
+
+  test("per-category counts are pinned", () => {
+    // Pinned per-category counts catch accidental additions/deletions within
+    // a category that net-zero in total. Update when intentionally changing.
+    const counts = Object.fromEntries(
+      [
+        "instruction-override",
+        "role-hijacking",
+        "prompt-extraction",
+        "format-injection",
+        "data-exfiltration",
+        "confidence-manipulation",
+        "jailbreak",
+        "markup-injection",
+      ].map((c) => [c, BUILTIN_PATTERNS.filter((p) => p.category === c).length])
+    );
+    expect(counts["instruction-override"]).toBe(5);
+    expect(counts["role-hijacking"]).toBe(6);
+    expect(counts["prompt-extraction"]).toBe(6);
+    expect(counts["format-injection"]).toBe(10);
+    expect(counts["data-exfiltration"]).toBe(4);
+    expect(counts["confidence-manipulation"]).toBe(5);
+    expect(counts["jailbreak"]).toBe(5);
+    expect(counts["markup-injection"]).toBe(3);
   });
 });
 
@@ -1942,11 +1966,22 @@ describe("scanOutput", () => {
       expect(urls).toHaveLength(1);
     });
 
-    test("URL with leading dot in allowlist entry still matches", () => {
+    test("leading-dot allowlist entry matches subdomains but NOT apex", () => {
       const guard = createGuard({ allowedOrigins: [".example.com"] });
-      const result = guard.scanOutput("See https://example.com/help");
-      const urls = result.findings.filter((f) => f.type === "outbound-url");
-      expect(urls).toHaveLength(0);
+      // Subdomain is allowed (passes through, not flagged)
+      const sub = guard.scanOutput("See https://assets.example.com/help");
+      expect(sub.findings.filter((f) => f.type === "outbound-url")).toHaveLength(0);
+      // Apex is still flagged (leading-dot entry excludes it by design)
+      const apex = guard.scanOutput("See https://example.com/help");
+      expect(apex.findings.filter((f) => f.type === "outbound-url")).toHaveLength(1);
+    });
+
+    test("bare allowlist entry matches apex and subdomains", () => {
+      const guard = createGuard({ allowedOrigins: ["example.com"] });
+      const apex = guard.scanOutput("See https://example.com/help");
+      expect(apex.findings.filter((f) => f.type === "outbound-url")).toHaveLength(0);
+      const sub = guard.scanOutput("See https://assets.example.com/help");
+      expect(sub.findings.filter((f) => f.type === "outbound-url")).toHaveLength(0);
     });
   });
 
