@@ -88,4 +88,19 @@ export interface GuardConfig {
   extraPatterns?: InjectionPattern[];
   /** Built-in pattern categories to disable (e.g., ["confidence-manipulation"]). */
   disableCategories?: string[];
+  /**
+   * When `true`, `sanitize()` returns the Unicode-normalized form on the
+   * clean path (no injection detected) too — stripping invisible characters
+   * and mapping homoglyphs to Latin equivalents before returning.
+   *
+   * When `false` (default in v2.0), clean input passes through unchanged
+   * so visible output matches what the user typed. This keeps behavior
+   * compatible with v1 while exposing the option for callers who prefer
+   * defense-in-depth over fidelity.
+   *
+   * Detection/neutralization paths always run on the normalized form
+   * regardless of this setting — flipping it only affects what the
+   * caller sees when no injection was found.
+   */
+  normalizeOutput?: boolean;
 }

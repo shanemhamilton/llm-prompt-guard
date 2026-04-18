@@ -307,10 +307,36 @@ export const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
  * between keyword letters to bypass regex detection. LLMs typically
  * ignore these during tokenization, so the injection still works.
  *
- * Covers: zero-width space (U+200B), zero-width non-joiner (U+200C),
- * zero-width joiner (U+200D), word joiner (U+2060), zero-width
- * no-break space / BOM (U+FEFF), soft hyphen (U+00AD), and other
+ * Covers Basic Multilingual Plane (BMP) invisibles: zero-width space
+ * (U+200B), zero-width non-joiner (U+200C), zero-width joiner (U+200D),
+ * word joiner (U+2060), zero-width no-break space / BOM (U+FEFF),
+ * soft hyphen (U+00AD), variation selectors (U+FE00–U+FE0F), and other
  * format/control characters from Unicode categories Cf and Zs.
+ *
+ * **Does NOT cover Plane 14 invisibles** — use {@link INVISIBLE_CHARS_SUPPLEMENTARY}
+ * for those. We keep the BMP regex separate so callers that need to
+ * avoid the `u` flag (e.g., because of downstream regex composition)
+ * can still use it as before.
  */
 export const INVISIBLE_CHARS =
   /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFE00-\uFE0F\uFEFF\uFFF9-\uFFFB]/g;
+
+/**
+ * Regex matching invisible Unicode characters on supplementary planes
+ * that require the `u` flag to represent as a character class.
+ *
+ * Covers:
+ * - **Unicode Tags (U+E0000–U+E007F, Plane 14)** — a deprecated block
+ *   most text renderers drop silently, but many LLM tokenizers pass
+ *   through. Attackers encode ASCII instructions as Tag characters
+ *   (e.g., U+E0069 = ASCII 0x69 = 'i') alongside a visible decoy; the
+ *   user sees benign text, the model sees "ignore all previous
+ *   instructions." AWS and Cisco published mitigations for this class
+ *   of "invisible prompt injection" in 2025.
+ * - **Variation Selectors Supplement (U+E0100–U+E01EF)** — an adjacent
+ *   supplementary block used for the same smuggling technique.
+ *
+ * Stripped by {@link normalizeUnicode} before pattern detection.
+ */
+export const INVISIBLE_CHARS_SUPPLEMENTARY =
+  /[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;

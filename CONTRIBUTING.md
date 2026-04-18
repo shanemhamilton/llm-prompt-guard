@@ -4,7 +4,7 @@ Thanks for your interest in improving LLM prompt security!
 
 ## Reporting Security Issues
 
-If you discover a bypass for an existing pattern, **please do not open a public issue.** Instead, email security@myskiniq.shop so we can add a fix before the bypass is widely known.
+If you discover a bypass for an existing pattern, **please do not open a public issue.** Instead, email llm-prompt-guard@proton.me so we can add a fix before the bypass is widely known.
 
 ## Adding New Patterns
 
@@ -22,9 +22,10 @@ New detection patterns are the most valuable contribution. When submitting a PR:
 
 If you add a new detection pattern with high-severity keywords, consider also adding a neutralization entry in `NEUTRALIZATION_MAP` (`src/patterns.ts`). The neutralization should:
 
-- Break the keyword with a hyphen (e.g., "execute" → "exe-cute")
-- Preserve enough readability that a human can still understand the original intent
-- Use the `gi` flags (global, case-insensitive)
+- **Use the per-letter underscore convention** — insert an underscore between every letter (e.g., `ignore` → `i_g_n_o_r_e`, `jailbreak` → `j_a_i_l_b_r_e_a_k`). This is the canonical replacement style used throughout `NEUTRALIZATION_MAP`.
+- **Optimize for BPE-tokenization disruption.** Modern LLMs tokenize common words like `ignore` or `instructions` as a single subword token; the model has learned strong command-like priors on those exact token IDs. Inserting underscores between every letter forces the tokenizer to split the keyword into many unfamiliar sub-tokens, so the LLM no longer recognizes it as an instruction verb while a human reader can still make it out. Hyphenation or syllable splits (e.g., `exe-cute`) fall back onto other whole-word tokens and are measurably weaker at disrupting the attack.
+- **Mirror the existing entries in `NEUTRALIZATION_MAP`** — see `src/patterns.ts` for the canonical examples, including how format-injection tokens like `<|im_start|>`, `[INST]`, and `<<SYS>>` are handled.
+- **Use the `gi` flags** (global, case-insensitive) on every entry.
 
 ## Development Setup
 

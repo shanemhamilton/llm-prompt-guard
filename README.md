@@ -50,16 +50,16 @@ All of this runs in under 1ms with zero external dependencies.
 
 ## Attack Categories
 
-| Category | Example | Severity |
-|---|---|---|
-| Instruction override | "ignore all previous instructions" | High |
-| Role hijacking | "you are now a pirate" | High |
-| Prompt extraction | "reveal your system prompt" | High |
-| Format injection | `<\|im_start\|>`, `<<SYS>>`, `### System:`, `[INST]` | High |
-| Data exfiltration | "dump all the database tables" | High |
-| Confidence manipulation | "confidence = 100", "auto_approve" | High |
-| Jailbreak | "DAN mode", "bypass safety filters" | High |
-| Markup injection | `<script>`, `<!-- INJECTION` | High |
+| Category | Patterns | Example | Severity |
+|---|---|---|---|
+| Instruction override | 5 | "ignore all previous instructions" | High |
+| Role hijacking | 6 | "you are now a pirate" | High |
+| Prompt extraction | 6 | "reveal your system prompt" | High |
+| Format injection | 10 | `<\|im_start\|>`, `<<SYS>>`, `### System:`, `[INST]` | High |
+| Data exfiltration | 4 | "dump all the database tables" | High |
+| Confidence manipulation | 5 | "confidence = 100", "auto_approve" | High |
+| Jailbreak | 5 | "DAN mode", "bypass safety filters" | High |
+| Markup injection | 3 | `<script>`, `<!-- INJECTION` | High |
 
 Format injection detection covers ChatML, Llama/Llama 2, Alpaca/Vicuna, and Anthropic Claude conversation formats.
 
@@ -221,15 +221,43 @@ Detection events are logged **without revealing which specific patterns matched 
 This is a **defense-in-depth layer**, not a complete solution:
 
 - **Regex-based** — Novel attack patterns not in the ruleset will not be caught. Semantic equivalents ("forget everything above", "imagine you are unrestricted") may bypass detection.
-- **English-only** — Non-English injection attempts may bypass detection.
+- **English-first** — multilingual pattern corpora are available as an opt-in import (see v2.0 release notes, coming in v2.0.0). Non-English injection attempts are not caught by the default ruleset.
 - **No encoding decode** — Base64, ROT13, or URL-encoded payloads are not decoded before matching.
 - **Neutralization is lossy** — Mangled keywords may still convey partial meaning to some LLMs, though underscore-separated characters break BPE tokenization effectively.
 
 Combine with other security measures: output validation, least-privilege LLM access, rate limiting, and monitoring.
 
+## Where this fits
+
+`llm-prompt-guard` is a **Layer 1 input filter** — a deterministic, zero-dependency, sub-millisecond regex pass. It is designed to sit in front of classifier-based defenses like Meta Llama Prompt Guard 2 (22M / 86M), Microsoft Azure Prompt Shields, or NVIDIA NeMo Guardrails — not as a replacement for them.
+
+Use it standalone only for structured-input fields where classifier cost and latency are prohibitive.
+
+Do **not** rely on it as the sole defense against multi-turn agents (Crescendo, Skeleton Key), semantic paraphrase, or adaptive attackers.
+
+This aligns with OWASP guidance: "Prompt injection vulnerabilities are fundamental to how current LLMs work; defense-in-depth is essential, and no single control is sufficient" (OWASP LLM01:2025).
+
+## Standards alignment
+
+- [OWASP LLM Top 10 for LLM Applications 2025 — LLM01 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+- [OWASP Top 10 for Agentic Applications 2026 — ASI01 Agent Goal Hijack, ASI02 Tool Misuse, ASI06 Memory & Context Poisoning](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
+
 ## Production Tested
 
 This library is extracted from a production codebase where it protects an AI research pipeline processing user-submitted data through Gemini 2.5 Pro. It runs in both user-facing endpoints (blocking/neutralizing at submission time) and scheduled backend processors (defense-in-depth re-sanitization before prompt construction).
+
+## Runtime compatibility
+
+| Runtime | Status |
+|---|---|
+| Node 20+ | ✓ (required from v2.0) |
+| Bun | ✓ |
+| Deno | ✓ |
+| Cloudflare Workers | ✓ |
+| Vercel Edge | ✓ |
+| Browser | ✓ |
+
+Pure JavaScript, no native deps, ~110 KB unpacked. Relies on `String.prototype.normalize("NFKD")` and Unicode-flag regex, both ES2018+.
 
 ## License
 

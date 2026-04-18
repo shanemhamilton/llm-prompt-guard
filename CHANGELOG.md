@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
 ## [1.0.0] - 2026-02-22
 
 ### Added
@@ -14,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Instruction override (5 patterns)
   - Role hijacking (6 patterns)
   - System prompt extraction (6 patterns)
-  - Format injection — ChatML, Llama/Llama 2, Alpaca/Vicuna, Anthropic Claude, JSON (11 patterns)
+  - Format injection — ChatML, Llama/Llama 2, Alpaca/Vicuna, Anthropic Claude, JSON (10 patterns)
   - Data exfiltration (4 patterns)
   - Confidence/approval manipulation (5 patterns)
   - Jailbreak (5 patterns)
