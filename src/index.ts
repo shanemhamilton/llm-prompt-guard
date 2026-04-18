@@ -1,4 +1,4 @@
-export { createGuard, sanitize, detect, count } from "./guard";
+export { createGuard, sanitize, detect, count, scanOutput } from "./guard";
 export { BUILTIN_PATTERNS, NEUTRALIZATION_MAP, LEET_MAP, ensureGlobalFlag } from "./patterns";
 export { generateCanary, createOutputValidator } from "./output";
 export type {
@@ -15,5 +15,8 @@ export type {
   OutputFlag,
   OutputValidator,
   OutputValidatorConfig,
+  OutputScanResult,
+  ExfilFinding,
+  ExfilFindingType,
   PiiConfig,
 } from "./types";

@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible bug in llm-prompt-guard (not a detection bypass — see SECURITY.md for those).
+title: "[bug]: "
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report. Please fill out as much of the form as you can — reproducible bugs get fixed faster than vague ones.
+
+        **Not a bug?**
+        - A way to bypass an existing detection pattern -> **DO NOT** file here. Email `llm-prompt-guard@proton.me` privately. See [SECURITY.md](../../SECURITY.md).
+        - A suggestion for a new pattern -> use the *Pattern suggestion* template instead.
+        - A question about usage -> start a GitHub Discussion.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the bug.
+      placeholder: e.g. "guard() throws on inputs longer than 10k characters"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Exact steps to reproduce the bug. The smaller and more self-contained, the better.
+      placeholder: |
+        1. Install `llm-prompt-guard@2.0.0`
+        2. Run the code sample below
+        3. Observe the error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual behaviour
+      description: What did you expect to happen, and what actually happened?
+      placeholder: |
+        Expected: guard() returns { ok: true }
+        Actual: guard() throws "RangeError: Maximum call stack size exceeded"
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        - Node.js version (`node --version`)
+        - OS and version (e.g. macOS 14.5, Ubuntu 24.04, Windows 11)
+        - `llm-prompt-guard` version (`npm list llm-prompt-guard`)
+        - Package manager (npm / pnpm / yarn / bun) and version
+      placeholder: |
+        Node: v20.11.1
+        OS: macOS 14.5 (arm64)
+        llm-prompt-guard: 2.0.0
+        npm: 10.2.4
+    validations:
+      required: false
+
+  - type: textarea
+    id: code-example
+    attributes:
+      label: Minimal code example
+      description: The smallest possible code snippet that reproduces the bug. Please remove unrelated code.
+      render: ts
+      placeholder: |
+        import { guard } from "llm-prompt-guard";
+
+        const result = guard("...");
+        console.log(result);
+    validations:
+      required: false

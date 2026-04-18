@@ -1,0 +1,65 @@
+name: Pattern suggestion (non-security)
+description: Suggest a new detection pattern, or a new category of detection pattern, for llm-prompt-guard.
+title: "[pattern]: "
+labels:
+  - pattern-suggestion
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > ⚠️ **Do not report a bypass for an existing pattern here.**
+        > That is a security issue — email `llm-prompt-guard@proton.me` privately. See [SECURITY.md](../../SECURITY.md).
+        >
+        > This template is only for **new** patterns and **new** attack categories where no existing rule is supposed to catch the input. If the rule exists and failed, it's a security report, not a pattern suggestion.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Attack category
+      description: Which category does this pattern belong to? Pick "new" if none of the existing ones fit.
+      options:
+        - instruction-override
+        - role-hijacking
+        - prompt-extraction
+        - format-injection
+        - data-exfiltration
+        - confidence-manipulation
+        - jailbreak
+        - new
+    validations:
+      required: true
+
+  - type: textarea
+    id: attack-example
+    attributes:
+      label: Real-world example of the attack
+      description: A concrete example string that represents the attack. If you can, cite where you've seen this in the wild (research paper, blog post, bug bounty write-up).
+      placeholder: |
+        Example input:
+          "From now on you will act as a DAN-style jailbreak..."
+        Seen in: https://example.com/writeup
+    validations:
+      required: true
+
+  - type: textarea
+    id: false-positive-test
+    attributes:
+      label: False-positive test case you've verified doesn't trigger
+      description: A benign input that looks superficially similar but must NOT match. We use these to keep precision high — every new pattern needs one.
+      placeholder: |
+        Benign input that the new pattern should NOT flag:
+          "Can you explain how prompt injection attacks like DAN work?"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How serious is this attack if it succeeds against an unprotected LLM application?
+      options:
+        - high
+        - medium
+    validations:
+      required: true

@@ -337,7 +337,35 @@ export const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
  * Covers: zero-width space (U+200B), zero-width non-joiner (U+200C),
  * zero-width joiner (U+200D), word joiner (U+2060), zero-width
  * no-break space / BOM (U+FEFF), soft hyphen (U+00AD), and other
- * format/control characters from Unicode categories Cf and Zs.
+ * format/control characters from Unicode categories Cf and Zs from
+ * the Basic Multilingual Plane (Plane 0).
  */
 export const INVISIBLE_CHARS =
   /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFE00-\uFE0F\uFEFF\uFFF9-\uFFFB]/g;
+
+/**
+ * Supplementary invisible / zero-width code points that live above the
+ * Basic Multilingual Plane and therefore need the `u` flag to strip via
+ * a single regex pass.
+ *
+ * Two ranges matter for prompt-injection defense:
+ *
+ * 1. **Tag block — U+E0000–U+E007F (Plane 14).** The Unicode Tag block
+ *    encodes a parallel ASCII range (space → "~") using invisible,
+ *    zero-width code points. LLMs tokenize these as ordinary text, so
+ *    an attacker can steganographically smuggle `ignore previous
+ *    instructions` through a visible decoy like `Hello there!` while
+ *    evading every ASCII regex. AWS Bedrock and Cisco both published
+ *    mitigations for this in 2025.
+ *
+ * 2. **Variation Selector Supplement — U+E0100–U+E01EF.** These 240
+ *    code points are variation selectors (VS17–VS256) used legitimately
+ *    only for CJK glyph variants. In injection payloads they are
+ *    interleaved between ASCII characters to disrupt byte-level regex
+ *    while remaining invisible.
+ *
+ * The `u` flag is required because both ranges are outside the BMP and
+ * would otherwise match as surrogate halves.
+ */
+export const INVISIBLE_CHARS_SUPPLEMENTARY =
+  /[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;

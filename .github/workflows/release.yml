@@ -1,0 +1,73 @@
+# ------------------------------------------------------------------------------
+# Release workflow — publishes to npm with Sigstore provenance on version tags.
+#
+# Triggers on pushes of tags matching v*.*.* (e.g. v2.0.0, v2.1.3).
+#
+# ONE-TIME MAINTAINER SETUP — choose ONE of the following:
+#
+#   (a) npm Automation Token (simpler, but long-lived credential):
+#       1. Sign in at https://www.npmjs.com/ with an account that has publish
+#          rights on the `llm-prompt-guard` package.
+#       2. Account -> Access Tokens -> Generate New Token -> "Automation".
+#          Automation tokens bypass 2FA and are the correct type for CI.
+#       3. Copy the token (shown once).
+#       4. In GitHub: Repo -> Settings -> Secrets and variables -> Actions ->
+#          New repository secret. Name: NPM_TOKEN, value: the token from step 3.
+#
+#   (b) npm Trusted Publishers (PREFERRED — no long-lived tokens):
+#       1. Sign in at https://www.npmjs.com/ on the `llm-prompt-guard` package
+#          page -> Settings -> Publishing access.
+#       2. Add a Trusted Publisher -> GitHub Actions. Fill in:
+#            Organization or user: shanemhamilton
+#            Repository:           llm-prompt-guard
+#            Workflow filename:    release.yml
+#            Environment name:     (leave empty unless you add one below)
+#       3. Save. npm will now accept publishes signed by this workflow's
+#          OIDC token — NPM_TOKEN becomes unnecessary and can be removed.
+#
+#   Docs:
+#     - https://docs.npmjs.com/trusted-publishers
+#     - https://docs.npmjs.com/generating-provenance-statements
+#
+# The `id-token: write` permission below is REQUIRED for both provenance and
+# Trusted Publishers; do not remove it.
+# ------------------------------------------------------------------------------
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# Default to no permissions at the workflow level; grant the minimum per job.
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
