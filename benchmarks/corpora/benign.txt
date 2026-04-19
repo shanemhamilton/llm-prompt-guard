@@ -526,3 +526,11 @@ Play a cashier and I'll be the customer — we're practicing for her first retai
 Our servers are down for maintenance until 2am. Please try again in the morning.
 I need you to edit this draft like a professional.
 Be a mentor for a second and give me honest feedback.
+
+# ── Legitimate base64 / long hex in comments (exercise decode paths) ──
+here's the base64 of the logo: aGVsbG8gd29ybGQh
+attaching the header: TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQ=
+my JWT header decoded is eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+the transaction id from stripe is ch_3NpIgq2eZvKYlo2C1lHRqV4M
+commit hash for the bug report is 0a1b2c3d4e5f6789a0b1c2d3e4f56789a0b1c2d3
+gpg key fingerprint F77C73FA1A0E2B5C9D3A8B4E7F2C1D5A0E9B8F3C6D2A5B7E0F1C9D3A8B4E7F2C

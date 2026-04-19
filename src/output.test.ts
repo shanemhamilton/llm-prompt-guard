@@ -30,6 +30,21 @@ describe("generateCanary", () => {
     // No special regex chars, no whitespace, no control chars
     expect(canary).toMatch(/^[A-Za-z0-9_]+$/);
   });
+
+  test("throws if Web Crypto is unavailable (no silent Math.random fallback)", () => {
+    // We'd rather fail loudly than ship a low-entropy canary — a canary
+    // that an attacker can predict is worse than useless. Simulate a
+    // runtime without Web Crypto by temporarily hiding it on globalThis.
+    const original = globalThis.crypto;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).crypto = undefined;
+    try {
+      expect(() => generateCanary()).toThrow(/Web Crypto/);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (globalThis as any).crypto = original;
+    }
+  });
 });
 
 // ── Canary token detection ───────────────────────────────────────────
@@ -81,6 +96,33 @@ describe("Canary token detection", () => {
     const validator = createOutputValidator({ canaryTokens: [canary] });
     const result = validator.validate(canary);
     expect(result.safe).toBe(false);
+  });
+
+  test("canary with zero-width chars interleaved still flagged", () => {
+    // An attacker who controls the system prompt could induce the LLM to
+    // emit the canary with U+200B / U+200C / etc. between letters to leak
+    // it without tripping a plain `.includes()` check. We strip invisibles
+    // before matching so the canary gets caught anyway.
+    const canary = generateCanary();
+    const validator = createOutputValidator({ canaryTokens: [canary] });
+    const zwsp = "\u200B"; // zero-width space
+    const withZwsp =
+      canary.slice(0, 6) + zwsp + canary.slice(6, 12) + zwsp + canary.slice(12);
+    const result = validator.validate(`The secret is ${withZwsp}`);
+    expect(result.safe).toBe(false);
+    expect(result.flags[0]?.type).toBe("canary_leak");
+  });
+
+  test("canary with Plane 14 tag chars interleaved still flagged", () => {
+    const canary = generateCanary();
+    const validator = createOutputValidator({ canaryTokens: [canary] });
+    // U+E0020 (tag space) between every few letters — invisible on render
+    const tagSpace = String.fromCodePoint(0xe0020);
+    const smuggled =
+      canary.slice(0, 4) + tagSpace + canary.slice(4, 10) + tagSpace + canary.slice(10);
+    const result = validator.validate(`Token: ${smuggled}`);
+    expect(result.safe).toBe(false);
+    expect(result.flags[0]?.type).toBe("canary_leak");
   });
 });
 
@@ -164,6 +206,32 @@ describe("PII detection", () => {
     test("safe without emails", () => {
       const result = validator.validate("No email here.");
       expect(result.safe).toBe(true);
+    });
+
+    test("linear-time on pathological input (ReDoS regression)", () => {
+      // The pre-fix email pattern `[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}` backtracked
+      // catastrophically on long runs of letters+digits without a valid TLD —
+      // ~18 seconds on 500KB inputs. The length-gated replacement keeps this
+      // under ~150ms on the same input.
+      const pathological = "a".repeat(500000) + "@" + "b".repeat(500000) + ".1";
+      const t0 = Date.now();
+      validator.validate(pathological);
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeLessThan(500);
+    });
+
+    test("still matches real-world email shapes", () => {
+      const validator = createOutputValidator({ pii: { emails: true } });
+      const inputs = [
+        "user@example.com",
+        "user.name+tag@example.co.uk",
+        "no-reply@sub.domain.example.com",
+        "first.last+filter@corporate-domain-with-hyphens.example.photography",
+      ];
+      for (const input of inputs) {
+        const r = validator.validate(input);
+        expect(r.flags.find((f) => f.matchedText === input)).toBeTruthy();
+      }
     });
   });
 

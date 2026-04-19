@@ -19,6 +19,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [2.0.1] - 2026-04-18
+
+### Security
+
+- **Email PII regex ReDoS.** The v2.0 email regex
+  `/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g` caused catastrophic
+  backtracking on pathological inputs (5–18s lockup on ~500 KB inputs of
+  the form `"a"*N + "@" + "b"*N + ".1"`). An attacker who enabled
+  `pii.emails: true` on untrusted LLM output had a DoS vector. Fixed with
+  a length-gated RFC 5321-aligned pattern (`{1,64}@{1,253}\.{2,24}`) that
+  completes in ~30–80 ms on the same adversarial input. All real-world
+  email shapes still match.
+- **`generateCanary()` silent fallback to `Math.random()`.** When Web
+  Crypto was unavailable, the canary token was generated from a
+  predictable PRNG — a third party observing a handful of canaries could
+  reconstruct state and defeat the mechanism. Web Crypto is available in
+  every runtime this library claims compatibility with (Node 20+, Bun,
+  Deno, Cloudflare Workers, modern browsers), so the fallback was dead
+  code with a footgun attached. `generateCanary()` now throws a clear
+  error on runtimes that lack `globalThis.crypto.getRandomValues`.
+- **Canary detection bypass via zero-width / tag characters.** The v2.0
+  `validateOutput` canary check used `output.includes(canary)` on raw
+  UTF-16. An attacker who could induce the LLM to emit the canary with
+  U+200B (or any Plane-14 tag char) interleaved between letters would
+  leak the canary without being flagged. Fix: strip `INVISIBLE_CHARS`
+  and `INVISIBLE_CHARS_SUPPLEMENTARY` from the LLM output before
+  `includes()`. Canary tokens are plain ASCII hex so the strip cannot
+  clobber legitimate matches.
+
+### Changed
+
+- **Internal refactor (no behavior change).** Deduplicated the two
+  identical `HOMOGLYPH_MAP` tables in `src/guard.ts`, extracted shared
+  `logDetection` / `truncateWithLog` helpers in `src/guard.ts`, extracted
+  `collectFirstMatchFlags` helper in `src/output.ts`, and reused the
+  existing public `ensureGlobalFlag` export instead of reimplementing it
+  inline. Net −58 lines.
+
+### Added
+
+- **Benchmark corpus:** 6 legitimate base64/hex strings (JWT header,
+  Lorem-ipsum base64, Stripe transaction id, 40-char hex commit hash,
+  64-char GPG fingerprint) to exercise the base64-decode and hex-blob
+  paths. Benign corpus: 509 → 515 inputs. FPR remains 0.00%.
+- **Regression tests** for each security finding (email ReDoS gate,
+  real-world email shapes, canary zero-width bypass, canary Plane 14
+  bypass, `generateCanary` error on runtimes without Web Crypto). Test
+  count: 418 → 423.
+
+### Known limitations (flagged, not patched)
+
+- `validateOutput`'s `SYSTEM_PROMPT_PATTERNS` over-match on benign LLM
+  phrasings like "here are my instructions for the recipe" or "as per my
+  instructions, I've updated the file." This is inherent to a regex-only
+  semantic validator. Whether to tighten with context anchors, downgrade
+  severity, or leave as advisory-only is a design choice deferred to
+  v2.1.
+
 ## [2.0.0] - 2026-04-18
 
 ### Changed (BREAKING)

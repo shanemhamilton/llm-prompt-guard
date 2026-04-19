@@ -1,6 +1,6 @@
 {
   "name": "llm-prompt-guard",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Regex-based prompt injection firewall for TypeScript. Zero dependencies, sub-millisecond, with neutralization mode.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

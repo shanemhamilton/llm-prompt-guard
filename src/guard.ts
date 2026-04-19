@@ -123,10 +123,9 @@ function scanOutputImpl(
 
   for (const { type, pattern } of EXFIL_PATTERNS) {
     // Fresh regex per scan — we mutate lastIndex and callers may retain
-    // references; also tolerates non-global patterns defensively.
-    const global = pattern.global
-      ? new RegExp(pattern.source, pattern.flags)
-      : new RegExp(pattern.source, pattern.flags + "g");
+    // references, so we always clone. Non-global patterns get `g` added.
+    const flags = pattern.global ? pattern.flags : pattern.flags + "g";
+    const global = new RegExp(pattern.source, flags);
     let match: RegExpExecArray | null;
     while ((match = global.exec(text)) !== null) {
       const matched = match[0];
@@ -415,6 +414,41 @@ function rot13(input: string): string {
 }
 
 /**
+ * Cyrillic / Greek homoglyph → Latin mapping used by both the output-safe
+ * normalization pass and the detection-time normalization pass. The two
+ * paths must agree: detection sees the same Latin form the caller will
+ * receive on the clean path, and vice versa.
+ */
+const HOMOGLYPH_MAP: Record<string, string> = {
+  "\u0430": "a", // Cyrillic а
+  "\u0435": "e", // Cyrillic е
+  "\u043E": "o", // Cyrillic о
+  "\u0440": "p", // Cyrillic р
+  "\u0441": "c", // Cyrillic с
+  "\u0443": "y", // Cyrillic у
+  "\u0445": "x", // Cyrillic х
+  "\u0456": "i", // Cyrillic і (Ukrainian)
+  "\u0458": "j", // Cyrillic ј
+  "\u04BB": "h", // Cyrillic һ
+  "\u0410": "A", // Cyrillic А
+  "\u0412": "B", // Cyrillic В
+  "\u0415": "E", // Cyrillic Е
+  "\u041A": "K", // Cyrillic К
+  "\u041C": "M", // Cyrillic М
+  "\u041D": "H", // Cyrillic Н
+  "\u041E": "O", // Cyrillic О
+  "\u0420": "P", // Cyrillic Р
+  "\u0421": "C", // Cyrillic С
+  "\u0422": "T", // Cyrillic Т
+  "\u0425": "X", // Cyrillic Х
+  "\u03BF": "o", // Greek omicron ο
+  "\u03B1": "a", // Greek alpha α (when combined with NFKD)
+};
+
+const HOMOGLYPH_RANGE = /[\u0410-\u04BB\u03B1\u03BF]/g;
+const DIACRITICAL_MARKS = /[\u0300-\u036F]/g;
+
+/**
  * Non-lossy output normalization — safe for returning to callers.
  *
  * Only strips invisible characters (BMP + Plane 14 tag block + VS
@@ -427,45 +461,14 @@ function rot13(input: string): string {
  * Used by `sanitize()`'s clean path when `normalizeOutput !== false`.
  */
 function normalizeForOutput(input: string): string {
-  // Strip BMP invisibles.
-  let result = input.replace(INVISIBLE_CHARS, "");
-  // Strip Plane 14 Tag block + Variation Selector Supplement.
-  result = result.replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+  // Strip BMP invisibles, then Plane 14 Tag block + Variation Selector Supplement.
+  let result = input.replace(INVISIBLE_CHARS, "").replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
   // NFKD decomposition (fullwidth → ASCII, ﬁ → fi, accented base separate).
   result = result.normalize("NFKD");
   // Strip combining diacritical marks after NFKD.
-  result = result.replace(/[\u0300-\u036F]/g, "");
+  result = result.replace(DIACRITICAL_MARKS, "");
   // Map Cyrillic / Greek homoglyphs to Latin — same table as detection.
-  const HOMOGLYPH_MAP_OUT: Record<string, string> = {
-    "\u0430": "a",
-    "\u0435": "e",
-    "\u043E": "o",
-    "\u0440": "p",
-    "\u0441": "c",
-    "\u0443": "y",
-    "\u0445": "x",
-    "\u0456": "i",
-    "\u0458": "j",
-    "\u04BB": "h",
-    "\u0410": "A",
-    "\u0412": "B",
-    "\u0415": "E",
-    "\u041A": "K",
-    "\u041C": "M",
-    "\u041D": "H",
-    "\u041E": "O",
-    "\u0420": "P",
-    "\u0421": "C",
-    "\u0422": "T",
-    "\u0425": "X",
-    "\u03BF": "o",
-    "\u03B1": "a",
-  };
-  result = result.replace(
-    /[\u0410-\u04BB\u03B1\u03BF]/g,
-    (ch) => HOMOGLYPH_MAP_OUT[ch] ?? ch
-  );
-  return result;
+  return result.replace(HOMOGLYPH_RANGE, (ch) => HOMOGLYPH_MAP[ch] ?? ch);
 }
 
 /**
@@ -508,53 +511,16 @@ function normalizeForDetection(input: string): { inPlace: string; detection: str
     return match;
   });
 
-  // Step 1b: Strip invisible characters (BMP + Plane 14 tag block + VS Supplement)
-  // The two passes must both run: INVISIBLE_CHARS is a non-`u` regex covering BMP
-  // invisibles; INVISIBLE_CHARS_SUPPLEMENTARY is a `u`-flagged regex covering
+  // Steps 1b-4: Strip invisibles (BMP + Plane 14 + VS Supplement), NFKD,
+  // strip diacritics, map Cyrillic/Greek homoglyphs to Latin. This is the
+  // same conservative normalization used by `normalizeForOutput` on the
+  // clean path — detection and output must see the same Latin form.
+  //
+  // INVISIBLE_CHARS is a non-`u` regex covering BMP invisibles;
+  // INVISIBLE_CHARS_SUPPLEMENTARY is a `u`-flagged regex covering
   // U+E0000–U+E007F (Tag block — steganographic ASCII smuggling) and
   // U+E0100–U+E01EF (Variation Selector Supplement).
-  let result = input.replace(INVISIBLE_CHARS, "");
-  result = result.replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
-
-  // Step 2: NFKD decomposition — decomposes characters like "ﬁ" → "fi",
-  // fullwidth letters → ASCII, and separates base chars from diacritics
-  result = result.normalize("NFKD");
-
-  // Step 3: Strip combining diacritical marks (U+0300–U+036F)
-  // This converts accented characters to their base form
-  result = result.replace(/[\u0300-\u036F]/g, "");
-
-  // Step 4: Map common Cyrillic/Greek homoglyphs to Latin equivalents.
-  const HOMOGLYPH_MAP: Record<string, string> = {
-    "\u0430": "a", // Cyrillic а
-    "\u0435": "e", // Cyrillic е
-    "\u043E": "o", // Cyrillic о
-    "\u0440": "p", // Cyrillic р
-    "\u0441": "c", // Cyrillic с
-    "\u0443": "y", // Cyrillic у
-    "\u0445": "x", // Cyrillic х
-    "\u0456": "i", // Cyrillic і (Ukrainian)
-    "\u0458": "j", // Cyrillic ј
-    "\u04BB": "h", // Cyrillic һ
-    "\u0410": "A", // Cyrillic А
-    "\u0412": "B", // Cyrillic В
-    "\u0415": "E", // Cyrillic Е
-    "\u041A": "K", // Cyrillic К
-    "\u041C": "M", // Cyrillic М
-    "\u041D": "H", // Cyrillic Н
-    "\u041E": "O", // Cyrillic О
-    "\u0420": "P", // Cyrillic Р
-    "\u0421": "C", // Cyrillic С
-    "\u0422": "T", // Cyrillic Т
-    "\u0425": "X", // Cyrillic Х
-    "\u03BF": "o", // Greek omicron ο
-    "\u03B1": "a", // Greek alpha α (when combined with NFKD)
-  };
-
-  result = result.replace(
-    /[\u0410-\u04BB\u03B1\u03BF]/g,
-    (ch) => HOMOGLYPH_MAP[ch] ?? ch
-  );
+  let result = normalizeForOutput(input);
 
   // Step 5: URL-decode %XX sequences
   result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) =>
@@ -685,7 +651,6 @@ function applyNonceToTag(tag: string, nonce: string): string {
 function quarantineInput(
   original: string,
   field: FieldConfig,
-  maxLength: number,
   log: Logger
 ): { wrapped: string; systemClause: string } {
   const opts = field.quarantineOptions ?? {};
@@ -705,17 +670,10 @@ function quarantineInput(
   // payload can't match the nonced closing tag, so this only removes
   // actual nonced occurrences (rare — attacker would need to guess the
   // nonce first).
-  let safe = original.split(closeTag).join("");
+  const stripped = original.split(closeTag).join("");
 
   // Truncate unwrapped text to maxLength before wrapping.
-  if (safe.length > maxLength) {
-    safe = safe.substring(0, maxLength);
-    log.info("Input truncated to max length", {
-      fieldName: field.fieldName,
-      originalLength: original.length,
-      maxLength,
-    });
-  }
+  const safe = truncateWithLog(stripped, field, original.length, log);
 
   const wrapped = `${openTag}\n${safe}\n${closeTag}`;
 
@@ -759,6 +717,48 @@ function generateTags(
 }
 
 // ── Main sanitization pipeline ───────────────────────────────────────
+
+/**
+ * Emit the standard "patterns detected" warning log. Body is identical
+ * across every mode branch — this collapses five call sites into one.
+ * Pattern category and match text are deliberately withheld to avoid
+ * giving attackers a ruleset oracle.
+ */
+function logDetection(
+  log: Logger,
+  field: FieldConfig,
+  patternsDetected: number,
+  inputLength: number,
+  hasHighSeverity: boolean,
+  userId?: string
+): void {
+  log.warn("Prompt injection patterns detected", {
+    fieldName: field.fieldName,
+    userId: userId ?? "unknown",
+    patternsDetected,
+    inputLength,
+    severity: hasHighSeverity ? "high" : "medium",
+  });
+}
+
+/**
+ * Truncate to `maxLength` when over, logging via `log.info` when the
+ * truncation happens. Returns the (possibly truncated) text unchanged.
+ */
+function truncateWithLog(
+  text: string,
+  field: FieldConfig,
+  inputLength: number,
+  log: Logger
+): string {
+  if (text.length <= field.maxLength) return text;
+  log.info("Input truncated to max length", {
+    fieldName: field.fieldName,
+    originalLength: inputLength,
+    maxLength: field.maxLength,
+  });
+  return text.substring(0, field.maxLength);
+}
 
 function sanitizeForPrompt(
   input: string,
@@ -852,17 +852,13 @@ function sanitizeForPrompt(
   }
 
   // Step 4: Branch on mode.
+  if (patternsDetected > 0) {
+    logDetection(log, field, patternsDetected, inputStr.length, hasHighSeverity, userId);
+  }
+
   switch (mode) {
     case "block": {
       if (patternsDetected > 0) {
-        log.warn("Prompt injection patterns detected", {
-          fieldName: field.fieldName,
-          userId: userId ?? "unknown",
-          patternsDetected,
-          inputLength: inputStr.length,
-          severity: hasHighSeverity ? "high" : "medium",
-        });
-
         if (hasHighSeverity) {
           return {
             sanitized: "",
@@ -873,7 +869,6 @@ function sanitizeForPrompt(
             mode,
           };
         }
-
         // Medium severity in block mode: neutralize (legacy compat).
         wasModified = true;
         sanitized = neutralize(normalizedInPlace);
@@ -883,13 +878,6 @@ function sanitizeForPrompt(
 
     case "neutralize": {
       if (patternsDetected > 0) {
-        log.warn("Prompt injection patterns detected", {
-          fieldName: field.fieldName,
-          userId: userId ?? "unknown",
-          patternsDetected,
-          inputLength: inputStr.length,
-          severity: hasHighSeverity ? "high" : "medium",
-        });
         wasModified = true;
         sanitized = neutralize(normalizedInPlace);
       }
@@ -898,13 +886,6 @@ function sanitizeForPrompt(
 
     case "excise": {
       if (patternsDetected > 0) {
-        log.warn("Prompt injection patterns detected", {
-          fieldName: field.fieldName,
-          userId: userId ?? "unknown",
-          patternsDetected,
-          inputLength: inputStr.length,
-          severity: hasHighSeverity ? "high" : "medium",
-        });
         wasModified = true;
         sanitized = excise(normalizedInPlace, patterns);
       }
@@ -912,22 +893,8 @@ function sanitizeForPrompt(
     }
 
     case "quarantine": {
-      if (patternsDetected > 0) {
-        log.warn("Prompt injection patterns detected", {
-          fieldName: field.fieldName,
-          userId: userId ?? "unknown",
-          patternsDetected,
-          inputLength: inputStr.length,
-          severity: hasHighSeverity ? "high" : "medium",
-        });
-      }
       // Always wrap — caller chose quarantine for structural isolation.
-      const { wrapped, systemClause } = quarantineInput(
-        sanitized,
-        field,
-        field.maxLength,
-        log
-      );
+      const { wrapped, systemClause } = quarantineInput(sanitized, field, log);
       return {
         sanitized: wrapped,
         wasModified: true,
@@ -939,33 +906,12 @@ function sanitizeForPrompt(
     }
 
     case "tag": {
-      if (patternsDetected > 0) {
-        log.warn("Prompt injection patterns detected", {
-          fieldName: field.fieldName,
-          userId: userId ?? "unknown",
-          patternsDetected,
-          inputLength: inputStr.length,
-          severity: hasHighSeverity ? "high" : "medium",
-        });
-      }
       // Tag mode: return original text unchanged with annotations.
       // Generate tags against original (control-char-stripped) text for accurate positions.
       const tags = generateTags(sanitized, patterns);
-
-      // Still enforce length limit on the original text.
-      let tagSanitized = sanitized;
-      if (tagSanitized.length > field.maxLength) {
-        tagSanitized = tagSanitized.substring(0, field.maxLength);
-        log.info("Input truncated to max length", {
-          fieldName: field.fieldName,
-          originalLength: inputStr.length,
-          maxLength: field.maxLength,
-        });
-      }
-
+      const tagSanitized = truncateWithLog(sanitized, field, inputStr.length, log);
       // Normalize whitespace.
       const tagTrimmed = tagSanitized.trim().replace(/\s+/g, " ");
-
       return {
         sanitized: tagTrimmed,
         wasModified: false,
@@ -978,14 +924,10 @@ function sanitizeForPrompt(
   }
 
   // Step 5: Enforce length limit (block, neutralize, excise).
-  if (sanitized.length > field.maxLength) {
-    sanitized = sanitized.substring(0, field.maxLength);
+  const truncated = truncateWithLog(sanitized, field, inputStr.length, log);
+  if (truncated !== sanitized) {
     wasModified = true;
-    log.info("Input truncated to max length", {
-      fieldName: field.fieldName,
-      originalLength: inputStr.length,
-      maxLength: field.maxLength,
-    });
+    sanitized = truncated;
   }
 
   // Step 6: Normalize whitespace (block, neutralize, excise).

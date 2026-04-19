@@ -5,6 +5,11 @@ import type {
   OutputValidatorConfig,
   PiiConfig,
 } from "./types";
+import {
+  ensureGlobalFlag,
+  INVISIBLE_CHARS,
+  INVISIBLE_CHARS_SUPPLEMENTARY,
+} from "./patterns";
 
 // ── Canary token generation ──────────────────────────────────────────
 
@@ -20,24 +25,24 @@ export function generateCanary(): string {
 }
 
 function randomHex(length: number): string {
-  try {
-    // Browser / modern Node
-    if (typeof globalThis.crypto?.getRandomValues === "function") {
-      const bytes = new Uint8Array(Math.ceil(length / 2));
-      globalThis.crypto.getRandomValues(bytes);
-      return Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
-        .join("")
-        .slice(0, length);
-    }
-  } catch {
-    // Fall through to Math.random
+  // A canary is only useful if it's unguessable to a third party, so we
+  // refuse to generate one on a runtime without a real CSPRNG. Every
+  // runtime we claim compatibility with (Node 20+, Bun, Deno, Cloudflare
+  // Workers, modern browsers) exposes Web Crypto. A `Math.random()`
+  // fallback would silently weaken callers who rely on this to detect
+  // injection — better to fail loudly than to ship a low-entropy canary.
+  if (typeof globalThis.crypto?.getRandomValues !== "function") {
+    throw new Error(
+      "generateCanary requires Web Crypto (globalThis.crypto.getRandomValues). " +
+        "This runtime does not provide it — upgrade to Node 20+, Bun, Deno, " +
+        "or a modern browser."
+    );
   }
-  // Fallback
-  let result = "";
-  for (let i = 0; i < length; i++) {
-    result += Math.floor(Math.random() * 16).toString(16);
-  }
-  return result;
+  const bytes = new Uint8Array(Math.ceil(length / 2));
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, length);
 }
 
 // ── System prompt leakage patterns ───────────────────────────────────
@@ -124,7 +129,14 @@ const PII_PATTERNS: Record<
   { pattern: RegExp; detail: string }
 > = {
   emails: {
-    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    // Length-gated to prevent ReDoS. The domain char-class `[a-zA-Z0-9.-]`
+    // overlaps with the trailing `\.` on dot, and when the TLD match fails
+    // the engine backtracks through every possible split of a long run —
+    // ~18s on 200KB pathological inputs without the gate. RFC 5321 caps
+    // the local part at 64 chars, domain at 253, and real-world TLDs top
+    // out around 24 chars (`.photography` is the practical ceiling), so
+    // the gates are RFC-correct, not arbitrary.
+    pattern: /[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,253}\.[a-zA-Z]{2,24}/g,
     detail: "Email address detected in output",
   },
   phones: {
@@ -164,6 +176,27 @@ function luhnCheck(digits: string): boolean {
     alternate = !alternate;
   }
   return sum % 10 === 0;
+}
+
+/**
+ * For each `{pattern, detail}` entry, run a single non-global match and
+ * push a flag of the given `type` / `severity` on hit. Used by the
+ * system-prompt-leak and behavioral-anomaly passes (both emit at most
+ * one flag per pattern, unlike the multi-match PII pass).
+ */
+function collectFirstMatchFlags(
+  entries: ReadonlyArray<{ pattern: RegExp; detail: string }>,
+  output: string,
+  type: OutputFlag["type"],
+  severity: OutputFlag["severity"],
+  flags: OutputFlag[]
+): void {
+  for (const { pattern, detail } of entries) {
+    const match = pattern.exec(output);
+    if (match) {
+      flags.push({ type, severity, detail, matchedText: match[0] });
+    }
+  }
 }
 
 // ── Output validator factory ─────────────────────────────────────────
@@ -206,31 +239,30 @@ export function createOutputValidator(
         return { safe: true, flags: [] };
       }
 
-      // 1. Canary token detection
-      for (const canary of canaryTokens) {
-        if (output.includes(canary)) {
-          flags.push({
-            type: "canary_leak",
-            severity: "high",
-            detail: "Canary token found in output — injection likely succeeded",
-            matchedText: canary,
-          });
+      // 1. Canary token detection. We strip invisibles (BMP + Plane 14 +
+      // VS Supplement) before the `.includes()` check so an attacker who
+      // induces the LLM to emit the canary with zero-width characters
+      // interleaved between letters still gets flagged. The canary itself
+      // is plain ASCII hex, so the strip cannot disturb legitimate hits.
+      if (canaryTokens.length > 0) {
+        const stripped = output
+          .replace(INVISIBLE_CHARS, "")
+          .replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+        for (const canary of canaryTokens) {
+          if (stripped.includes(canary)) {
+            flags.push({
+              type: "canary_leak",
+              severity: "high",
+              detail: "Canary token found in output — injection likely succeeded",
+              matchedText: canary,
+            });
+          }
         }
       }
 
       // 2. System prompt leakage
       if (systemPromptLeakage) {
-        for (const { pattern, detail } of SYSTEM_PROMPT_PATTERNS) {
-          const match = pattern.exec(output);
-          if (match) {
-            flags.push({
-              type: "system_prompt_leak",
-              severity: "high",
-              detail,
-              matchedText: match[0],
-            });
-          }
-        }
+        collectFirstMatchFlags(SYSTEM_PROMPT_PATTERNS, output, "system_prompt_leak", "high", flags);
       }
 
       // 3. PII detection (opt-in)
@@ -261,9 +293,7 @@ export function createOutputValidator(
         // Custom regex patterns
         if (pii.custom) {
           for (const regex of pii.custom) {
-            const global = regex.global
-              ? regex
-              : new RegExp(regex.source, regex.flags + "g");
+            const global = ensureGlobalFlag(regex);
             global.lastIndex = 0;
             let match: RegExpExecArray | null;
             while ((match = global.exec(output)) !== null) {
@@ -283,17 +313,7 @@ export function createOutputValidator(
 
       // 4. Behavioral anomalies
       if (behavioralAnomalies) {
-        for (const { pattern, detail } of BEHAVIORAL_ANOMALY_PATTERNS) {
-          const match = pattern.exec(output);
-          if (match) {
-            flags.push({
-              type: "behavioral_anomaly",
-              severity: "high",
-              detail,
-              matchedText: match[0],
-            });
-          }
-        }
+        collectFirstMatchFlags(BEHAVIORAL_ANOMALY_PATTERNS, output, "behavioral_anomaly", "high", flags);
       }
 
       return {
