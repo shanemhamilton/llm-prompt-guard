@@ -23,6 +23,19 @@ acceptable option per field: reject it outright, excise the matched phrase,
 wrap it in delimiters the model is told to ignore, tag it for caller-side
 handling, or (legacy) mangle keywords to break tokenization.
 
+```mermaid
+flowchart LR
+    U([User input]) --> G["guard.sanitize()"]
+    G -->|sanitized| P[Your LLM prompt]
+    P --> L[LLM]
+    L -->|response| V["guard.validateOutput()\nguard.scanOutput()"]
+    V -->|safe| A([Your app])
+    V -->|flagged| F([Handle / reject])
+
+    style G fill:#c7d7f5,stroke:#4a6fa5
+    style V fill:#c7d7f5,stroke:#4a6fa5
+```
+
 ## Quick Start
 
 ```ts
@@ -93,6 +106,35 @@ specific call.
 
 Every `sanitize` / `detect` / `count` call runs the same preprocess pipeline
 before regex matching:
+
+```mermaid
+flowchart TD
+    IN([Raw input]) --> S1[Strip control chars]
+
+    S1 --> S2["Normalize\nPlane 14 tag decode · strip invisibles\nNFKD · diacritics · homoglyphs"]
+
+    S2 --> S3["Decode encodings\nURL · char-split collapse · base64 · leet"]
+
+    S3 --> S4["Append detection variants\npre-leet · base64-decoded · Plane-14 decoded\nROT13 · reversed"]
+
+    S4 --> DET{"44 patterns\n+ extraPatterns"}
+
+    DET -- no match --> CLEAN["Clean path\nnormalize output\n(block / neutralize / excise only)"]
+    DET -- match --> MODE{"mode?"}
+
+    MODE --> BL["block\nreject high-severity\nneutralize medium"]
+    MODE --> NE["neutralize\nmangle keywords"]
+    MODE --> EX["excise\nremove matched phrases\ncollapse whitespace"]
+    MODE --> QU["quarantine\nalways wraps in delimiters\nreturns systemClause"]
+    MODE --> TG["tag\nreturn InjectionTag spans\npreserve content"]
+
+    CLEAN & BL & NE & EX & QU & TG --> OUT([SanitizationResult])
+
+    style DET fill:#f5e6c7,stroke:#a57c4a
+    style MODE fill:#f5e6c7,stroke:#a57c4a
+    style CLEAN fill:#c7f5d0,stroke:#4aa55e
+    style OUT fill:#c7f5d0,stroke:#4aa55e
+```
 
 1. **Normalize** — NFKD decomposition, strip combining diacritics.
 2. **Strip invisibles** — BMP zero-width (U+200B, U+200C, soft hyphen,
