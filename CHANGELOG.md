@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0](https://github.com/shanemhamilton/llm-prompt-guard/compare/llm-prompt-guard-v2.0.2...llm-prompt-guard-v2.1.0) (2026-05-24)
+
+
+### Features
+
+* add encoding attack resistance and output validation ([e06d337](https://github.com/shanemhamilton/llm-prompt-guard/commit/e06d337211434800533f5e0ba4c9e9987b35624d))
+* add excise, quarantine, and tag sanitization modes ([25233a0](https://github.com/shanemhamilton/llm-prompt-guard/commit/25233a04efd2e2d6a988b3836a0e4314a61497ec))
+* initial release — regex-based prompt injection firewall for TypeScript ([51591ef](https://github.com/shanemhamilton/llm-prompt-guard/commit/51591efc25be2ae5a7bf774c812dc26245ee895f))
+* v2.0.0 reconciliation — Plane 14, scanOutput, quarantine randomize, multilingual, benchmarks, hygiene ([05ca6ab](https://github.com/shanemhamilton/llm-prompt-guard/commit/05ca6ab75a676f94a3a0315f52f8f5d190e8997a))
+
+
+### Bug Fixes
+
+* add prepare script for git-based installs ([bdf3eb7](https://github.com/shanemhamilton/llm-prompt-guard/commit/bdf3eb7bb5fcf9a730b1b73c14dcc416a4b9083e))
+* **release:** Trusted Publishers OIDC — upgrade npm, drop NODE_AUTH_TOKEN ([95fb863](https://github.com/shanemhamilton/llm-prompt-guard/commit/95fb863ef25164f62f5aff2abb86a0b5d517efdc))
+* review gate — allowedOrigins dot-prefix, pin pattern counts, trim LEET regex ([31b468b](https://github.com/shanemhamilton/llm-prompt-guard/commit/31b468baa2039174dbf0e0d5cacd5e21e7988a89))
+* **security:** v2.0.1 — email ReDoS, canary fallback, canary bypass + simplification ([9038581](https://github.com/shanemhamilton/llm-prompt-guard/commit/90385818a23fa3a76e9389005c5df92fbe767303))
+
 ## [Unreleased]
 
 ### Added
