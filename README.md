@@ -1,9 +1,13 @@
 # llm-prompt-guard
 
-TypeScript prompt-injection firewall. Zero dependencies. Sub-millisecond.
-Five sanitization modes. Encoding-bypass resistant. Input-side detection,
-output-side validation, and exfiltration-shape scanning.
-OWASP LLM01 / Agentic ASI01 aligned.
+**Prompt injection defense for TypeScript and Node.js LLM applications.**
+Zero dependencies. Sub-millisecond. Five sanitization modes. Encoding-bypass resistant (leet, base64, ROT13, Unicode Plane 14, homoglyphs). Input-side detection, output-side canary validation, and exfiltration-shape scanning. OWASP LLM01 / Agentic ASI01 aligned.
+
+[![npm version](https://img.shields.io/npm/v/llm-prompt-guard.svg)](https://www.npmjs.com/package/llm-prompt-guard)
+[![CI](https://github.com/shanemhamilton/llm-prompt-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/shanemhamilton/llm-prompt-guard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm downloads](https://img.shields.io/npm/dm/llm-prompt-guard.svg)](https://www.npmjs.com/package/llm-prompt-guard)
+[![Bundle size](https://img.shields.io/bundlephobia/minzip/llm-prompt-guard)](https://bundlephobia.com/package/llm-prompt-guard)
 
 ```
 npm install llm-prompt-guard
