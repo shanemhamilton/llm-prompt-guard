@@ -28,7 +28,7 @@ flowchart LR
     U([User input]) --> G["guard.sanitize()"]
     G -->|sanitized| P[Your LLM prompt]
     P --> L[LLM]
-    L -->|response| V["guard.validateOutput()\nguard.scanOutput()"]
+    L -->|response| V["guard.validateOutput()<br/>guard.scanOutput()"]
     V -->|safe| A([Your app])
     V -->|flagged| F([Handle / reject])
 
@@ -110,25 +110,26 @@ before regex matching:
 ```mermaid
 flowchart TD
     IN([Raw input]) --> S1[Strip control chars]
+    S1 --> S2["Normalize<br/>Plane 14 decode · strip invisibles<br/>NFKD · diacritics · homoglyphs"]
+    S2 --> S3["Decode encodings<br/>URL · char-split · base64 · leet"]
+    S3 --> S4["Append detection variants<br/>pre-leet · base64 decoded · Plane-14 decoded<br/>ROT13 · reversed"]
+    S4 --> DET{"Pattern matching<br/>44 patterns + extraPatterns"}
 
-    S1 --> S2["Normalize\nPlane 14 tag decode · strip invisibles\nNFKD · diacritics · homoglyphs"]
+    DET -->|no match| CLEAN["Clean path<br/>normalize output<br/>block / neutralize / excise only"]
+    DET -->|match| MODE{"mode?"}
 
-    S2 --> S3["Decode encodings\nURL · char-split collapse · base64 · leet"]
+    MODE --> BL["block<br/>reject high-severity<br/>neutralize medium"]
+    MODE --> NE["neutralize<br/>mangle keywords"]
+    MODE --> EX["excise<br/>remove matched phrases"]
+    MODE --> QU["quarantine<br/>always wraps in delimiters<br/>returns systemClause"]
+    MODE --> TG["tag<br/>return InjectionTag spans<br/>preserve content"]
 
-    S3 --> S4["Append detection variants\npre-leet · base64-decoded · Plane-14 decoded\nROT13 · reversed"]
-
-    S4 --> DET{"44 patterns\n+ extraPatterns"}
-
-    DET -- no match --> CLEAN["Clean path\nnormalize output\n(block / neutralize / excise only)"]
-    DET -- match --> MODE{"mode?"}
-
-    MODE --> BL["block\nreject high-severity\nneutralize medium"]
-    MODE --> NE["neutralize\nmangle keywords"]
-    MODE --> EX["excise\nremove matched phrases\ncollapse whitespace"]
-    MODE --> QU["quarantine\nalways wraps in delimiters\nreturns systemClause"]
-    MODE --> TG["tag\nreturn InjectionTag spans\npreserve content"]
-
-    CLEAN & BL & NE & EX & QU & TG --> OUT([SanitizationResult])
+    CLEAN --> OUT([SanitizationResult])
+    BL --> OUT
+    NE --> OUT
+    EX --> OUT
+    QU --> OUT
+    TG --> OUT
 
     style DET fill:#f5e6c7,stroke:#a57c4a
     style MODE fill:#f5e6c7,stroke:#a57c4a
