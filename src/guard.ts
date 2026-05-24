@@ -63,8 +63,8 @@ const EXFIL_PATTERNS: Array<{
   },
   { type: "data-url", pattern: /data:[^;,]+;base64,/gi },
   { type: "hex-blob", pattern: /[0-9a-fA-F]{64,}/g },
-  // Outbound URL last so more-specific patterns (markdown image, data URL)
-  // get first pick on their substrings.
+  // Outbound URL last; a markdown-image or data-URL span will ALSO match outbound-url.
+  // Callers receive both findings — no de-duplication is applied.
   { type: "outbound-url", pattern: /https?:\/\/[^\s)"'<>]+/g },
 ];
 

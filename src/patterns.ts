@@ -183,7 +183,7 @@ export const BUILTIN_PATTERNS: InjectionPattern[] = [
 
   // ── Confidence / approval manipulation ────────────────────────────
   {
-    pattern: /confidence\s*[=:]\s*(100|99|9[5-9])/i,
+    pattern: /confidence\s*[=:]\s*([1i][0o]{2}|9[5-9st])/i,
     severity: "high",
     category: "confidence-manipulation",
   },
@@ -345,7 +345,7 @@ export const NEUTRALIZATION_MAP: Array<[RegExp, string]> = [
   // ── Jailbreak keywords ──
   [/jailbreak/gi, "j_a_i_l_b_r_e_a_k"],
   [/bypass/gi, "b_y_p_a_s_s"],
-  [/\bDAN\b/g, "D_A_N"],
+  [/\bDAN\b/gi, "D_A_N"],
 
   // ── Format injection tokens ──
   [/<\|/g, "< |"],
