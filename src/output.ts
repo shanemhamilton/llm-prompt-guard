@@ -7,6 +7,8 @@ import type {
 } from "./types";
 import {
   ensureGlobalFlag,
+  HOMOGLYPH_MAP,
+  HOMOGLYPH_RANGE,
   INVISIBLE_CHARS,
   INVISIBLE_CHARS_SUPPLEMENTARY,
 } from "./patterns";
@@ -245,9 +247,13 @@ export function createOutputValidator(
       // interleaved between letters still gets flagged. The canary itself
       // is plain ASCII hex, so the strip cannot disturb legitimate hits.
       if (canaryTokens.length > 0) {
+        HOMOGLYPH_RANGE.lastIndex = 0;
         const stripped = output
           .replace(INVISIBLE_CHARS, "")
-          .replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+          .replace(INVISIBLE_CHARS_SUPPLEMENTARY, "")
+          .normalize("NFKD")
+          .replace(/[\u0300-\u036F]/g, "")
+          .replace(HOMOGLYPH_RANGE, (ch) => HOMOGLYPH_MAP[ch] ?? ch);
         for (const canary of canaryTokens) {
           if (stripped.includes(canary)) {
             flags.push({

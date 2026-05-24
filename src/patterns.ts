@@ -271,6 +271,39 @@ export const LEET_MAP: Record<string, string> = {
 };
 
 /**
+ * Cyrillic and Greek homoglyph → ASCII/Latin substitution map.
+ * Used for both detection normalization and output normalization.
+ */
+export const HOMOGLYPH_MAP: Record<string, string> = {
+  "а": "a", // Cyrillic а
+  "е": "e", // Cyrillic е
+  "о": "o", // Cyrillic о
+  "р": "p", // Cyrillic р
+  "с": "c", // Cyrillic с
+  "у": "y", // Cyrillic у
+  "х": "x", // Cyrillic х
+  "і": "i", // Cyrillic і (Ukrainian)
+  "ј": "j", // Cyrillic ј
+  "һ": "h", // Cyrillic һ
+  "А": "A", // Cyrillic А
+  "В": "B", // Cyrillic В
+  "Е": "E", // Cyrillic Е
+  "К": "K", // Cyrillic К
+  "М": "M", // Cyrillic М
+  "Н": "H", // Cyrillic Н
+  "О": "O", // Cyrillic О
+  "Р": "P", // Cyrillic Р
+  "С": "C", // Cyrillic С
+  "Т": "T", // Cyrillic Т
+  "Х": "X", // Cyrillic Х
+  "ο": "o", // Greek omicron ο
+  "α": "a", // Greek alpha α (when combined with NFKD)
+};
+
+/** Regex matching any character with an entry in HOMOGLYPH_MAP. */
+export const HOMOGLYPH_RANGE = /[А-һαο]/g;
+
+/**
  * Return a copy of `regex` with the global (`g`) flag set.
  * If already global, returns the original instance.
  */

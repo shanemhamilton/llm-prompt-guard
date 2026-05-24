@@ -14,6 +14,8 @@ import type {
 import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
+  HOMOGLYPH_MAP,
+  HOMOGLYPH_RANGE,
   INVISIBLE_CHARS,
   INVISIBLE_CHARS_SUPPLEMENTARY,
   LEET_MAP,
@@ -413,39 +415,6 @@ function rot13(input: string): string {
   });
 }
 
-/**
- * Cyrillic / Greek homoglyph → Latin mapping used by both the output-safe
- * normalization pass and the detection-time normalization pass. The two
- * paths must agree: detection sees the same Latin form the caller will
- * receive on the clean path, and vice versa.
- */
-const HOMOGLYPH_MAP: Record<string, string> = {
-  "\u0430": "a", // Cyrillic а
-  "\u0435": "e", // Cyrillic е
-  "\u043E": "o", // Cyrillic о
-  "\u0440": "p", // Cyrillic р
-  "\u0441": "c", // Cyrillic с
-  "\u0443": "y", // Cyrillic у
-  "\u0445": "x", // Cyrillic х
-  "\u0456": "i", // Cyrillic і (Ukrainian)
-  "\u0458": "j", // Cyrillic ј
-  "\u04BB": "h", // Cyrillic һ
-  "\u0410": "A", // Cyrillic А
-  "\u0412": "B", // Cyrillic В
-  "\u0415": "E", // Cyrillic Е
-  "\u041A": "K", // Cyrillic К
-  "\u041C": "M", // Cyrillic М
-  "\u041D": "H", // Cyrillic Н
-  "\u041E": "O", // Cyrillic О
-  "\u0420": "P", // Cyrillic Р
-  "\u0421": "C", // Cyrillic С
-  "\u0422": "T", // Cyrillic Т
-  "\u0425": "X", // Cyrillic Х
-  "\u03BF": "o", // Greek omicron ο
-  "\u03B1": "a", // Greek alpha α (when combined with NFKD)
-};
-
-const HOMOGLYPH_RANGE = /[\u0410-\u04BB\u03B1\u03BF]/g;
 const DIACRITICAL_MARKS = /[\u0300-\u036F]/g;
 
 /**
@@ -669,8 +638,9 @@ function quarantineInput(
   // nonced delimiters, a pre-embedded fixed `</untrusted_input>` in the
   // payload can't match the nonced closing tag, so this only removes
   // actual nonced occurrences (rare — attacker would need to guess the
-  // nonce first).
-  const stripped = original.split(closeTag).join("");
+  // nonce first). Case-insensitive strip catches </UNTRUSTED_INPUT> variants.
+  const escapedTag = closeTag.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  const stripped = original.replace(new RegExp(escapedTag, "gi"), "");
 
   // Truncate unwrapped text to maxLength before wrapping.
   const safe = truncateWithLog(stripped, field, original.length, log);
@@ -698,6 +668,7 @@ function generateTags(
   const tags: InjectionTag[] = [];
   for (const { pattern, severity, category } of patterns) {
     const global = ensureGlobalFlag(pattern);
+    global.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = global.exec(original)) !== null) {
       tags.push({
@@ -815,6 +786,7 @@ function sanitizeForPrompt(
   // Step 3: Detect injection patterns on full detection string.
   let hasHighSeverity = false;
   for (const { pattern, severity } of patterns) {
+    pattern.lastIndex = 0;
     if (pattern.test(normalizedDetection)) {
       patternsDetected++;
       if (severity === "high") {
@@ -906,12 +878,11 @@ function sanitizeForPrompt(
     }
 
     case "tag": {
-      // Tag mode: return original text unchanged with annotations.
-      // Generate tags against original (control-char-stripped) text for accurate positions.
-      const tags = generateTags(sanitized, patterns);
+      // Tag mode: return text with injection annotations.
+      // Truncate and normalize whitespace first so tag offsets index the returned string.
       const tagSanitized = truncateWithLog(sanitized, field, inputStr.length, log);
-      // Normalize whitespace.
       const tagTrimmed = tagSanitized.trim().replace(/\s+/g, " ");
+      const tags = generateTags(tagTrimmed, patterns);
       return {
         sanitized: tagTrimmed,
         wasModified: false,
@@ -961,6 +932,7 @@ function containsInjection(
   if (!input) return false;
   const { detection } = normalizeForDetection(String(input));
   for (const { pattern } of patterns) {
+    pattern.lastIndex = 0;
     if (pattern.test(detection)) return true;
   }
   return false;
@@ -974,6 +946,7 @@ function countPatterns(
   const { detection } = normalizeForDetection(String(input));
   let n = 0;
   for (const { pattern } of patterns) {
+    pattern.lastIndex = 0;
     if (pattern.test(detection)) n++;
   }
   return n;
