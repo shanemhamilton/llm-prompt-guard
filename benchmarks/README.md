@@ -262,10 +262,30 @@ A future `benchmarks/external/` directory could host thin adapters for
 each — invoked behind an opt-in flag so the default `npm run bench`
 stays network-free and fast.
 
+## Public-dataset benchmark (`npm run bench:public`)
+
+`public.ts` scores `detect()` against
+[deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections)
+— 662 labeled rows (263 injection / 399 benign), mixed English and
+German. The dataset is © deepset, licensed Apache-2.0, and vendored at
+`corpora/deepset-prompt-injections.json` so the run stays zero-network
+and CI-stable. Two configurations are scored (core built-ins, and core
+plus the multilingual packs) and standard precision / recall / F1 / FPR
+are written to `PUBLIC_RESULTS.md`, with regression floors gated in CI.
+
+Unlike the curated corpora, this dataset was labeled by a third party
+and includes attack styles the library documents as out of reach
+(task-drift with no injection vocabulary), so the recall number is low
+and published anyway — see the interpretation notes in
+`PUBLIC_RESULTS.md`.
+
 ## Files in this directory
 
 - `README.md` — this file.
-- `run.ts` — the harness.
+- `run.ts` — the curated-corpora harness.
+- `public.ts` — the public-dataset harness.
 - `corpora/benign.txt` — benign corpus (one input per line).
 - `corpora/attacks.json` — attack corpus (structured by category).
-- `RESULTS.md` — most recent run output. Regenerated on every `npm run bench`.
+- `corpora/deepset-prompt-injections.json` — vendored public dataset (Apache-2.0).
+- `RESULTS.md` — most recent curated run. Regenerated on every `npm run bench`.
+- `PUBLIC_RESULTS.md` — most recent public-dataset run. Regenerated on every `npm run bench:public`.

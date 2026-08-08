@@ -1,7 +1,14 @@
 # llm-prompt-guard
 
-**Prompt injection defense for TypeScript and Node.js LLM applications.**
-Zero dependencies. Sub-millisecond. Five sanitization modes. Encoding-bypass resistant (leet, base64, ROT13, Unicode Plane 14, homoglyphs). Input-side detection, output-side canary validation, and exfiltration-shape scanning. OWASP LLM01 / Agentic ASI01 aligned.
+**Layer-1 prompt-injection defense for TypeScript and Node.js LLM applications.**
+Zero dependencies. Sub-millisecond. A normalization pipeline that defeats
+encoding bypasses (leet, base64, ROT13, Unicode Plane 14, homoglyphs) —
+the same character-level smuggling shown to defeat ML-based guards —
+plus regex triage, quarantine/spotlighting with nonced delimiters, canary
+validation, and exfiltration-shape output scanning. Not a firewall: it is
+the microsecond first layer of a defense-in-depth stack, with
+[measured precision/recall on a public dataset](./benchmarks/PUBLIC_RESULTS.md)
+and explicit [non-goals](#non-goals).
 
 [![npm version](https://img.shields.io/npm/v/llm-prompt-guard.svg)](https://www.npmjs.com/package/llm-prompt-guard)
 [![CI](https://github.com/shanemhamilton/llm-prompt-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/shanemhamilton/llm-prompt-guard/actions/workflows/ci.yml)
@@ -280,21 +287,36 @@ Disable categories individually via `disableCategories`.
 
 ## Benchmarks
 
-Headline numbers from a reproducible, zero-network harness at
-[`benchmarks/`](./benchmarks/README.md):
+Two reproducible, zero-network harnesses at
+[`benchmarks/`](./benchmarks/README.md), both regression-gated in CI.
 
-- Benign corpus: 509 inputs, **0.00% FPR**.
-- Attack corpus: 198 inputs (187 detect-expected, 11 documented
-  known-misses). **100% detection rate on detect-expected**, 0 false
-  negatives excluding known-misses.
-- Latency: p50 ~5µs, p95 ~12µs, p99 ~34µs per `detect()` call.
-- All 15 curated output-validation probes flag (incl. canary-leak).
-- All five sanitization modes wire correctly across the full attack
-  corpus (shape valid, no crashes).
+**Public dataset** — [deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections)
+(662 labeled rows, EN+DE, Apache-2.0, vendored). Full report:
+[`PUBLIC_RESULTS.md`](./benchmarks/PUBLIC_RESULTS.md).
 
-Run it: `npm run bench`. Both corpora are synthetic and hand-curated.
-The numbers are illustrative, not exhaustive — drop the library into
-your own traffic and re-measure before trusting an FPR.
+| Configuration | Precision | Recall | FPR | p50 latency |
+| --- | ---: | ---: | ---: | ---: |
+| core | 100% | 9.1% | 0.00% | ~10µs |
+| core + multilingual | 100% | 11.0% | 0.00% | ~14µs |
+
+Read the recall number the way it is published: this corpus is dominated
+by task-drift attacks with no injection vocabulary ("stop, I urgently
+need help with X instead"), which regex detection structurally cannot
+catch and which are the documented job of the model-based layers above
+this one. What Layer 1 is scored on is the other two columns — zero
+false positives on benign traffic at microsecond cost, so stacking it
+in front of an ML guard or LLM judge is free. A subset of patterns was
+widened after reviewing this dataset's misses, so treat the numbers as
+in-domain rather than held-out.
+
+**Curated corpus** — 515 benign + 198 attack inputs covering every
+encoding/evasion class the pipeline claims to defeat: **0.00% FPR, 100%
+detection on detect-expected entries**, 11 documented known-misses,
+p50 ~5–10µs per `detect()` call. All 15 output-validation probes flag;
+all five modes shape-verified.
+
+Run them: `npm run bench && npm run bench:public`. Re-measure on your
+own traffic before trusting any FPR.
 
 ## Where this fits
 
@@ -313,8 +335,8 @@ semantic paraphrase, novel phrasings, and multi-turn escalation.
 
 ## Standards alignment
 
-- **[OWASP LLM Top 10 2025](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)** — LLM01 Prompt Injection.
-- **[OWASP Agentic Top 10 2026](https://genaisecurityproject.com/llm-top-10-for-agentic-ai/)** — ASI01, ASI02, ASI06.
+- **[OWASP LLM Top 10 2025](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)** — LLM01 Prompt Injection: this library implements the input-filtering, output-filtering, and segregate-external-content (quarantine) mitigations. The other LLM01 mitigations (privilege control, human approval, adversarial testing) belong to your application layer.
+- **[OWASP Agentic Top 10 2026](https://genaisecurityproject.com/llm-top-10-for-agentic-ai/)** — relevant to ASI01 as an input/output filtering layer; agent-specific mitigations (tool restrictions, memory isolation) are out of scope today.
 - **[HiddenLayer Policy Puppetry (2025)](https://hiddenlayer.com/research/novel-universal-bypass-for-all-major-llms/)** — universal bypass mixing JSON role, ChatML, and Alpaca. Caught by format-injection + the multi-format benchmark class.
 - **[Willison — Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)** — private data + untrusted content + external communication. This library targets the second leg.
 - **[Meta — Agents Rule of Two](https://meta.com/blog/agents-rule-of-two/)** — agent-design principle that complements single-turn input filtering.
@@ -430,11 +452,29 @@ metadata, so attackers cannot use your logs to refine bypasses.
 
 ## Limitations
 
-- **Regex, not semantic.** Novel paraphrases ("kindly overlook the above") will not match — stack a model-based filter.
+- **Regex, not semantic.** Novel paraphrases ("kindly overlook the above") will not match — stack a model-based filter. The [public benchmark](./benchmarks/PUBLIC_RESULTS.md) quantifies this honestly.
 - **English-first.** Multilingual patterns for Spanish, French, German, and Portuguese are opt-in; they do not cover arbitrary translation.
 - **Encoding passes are heuristic.** Base64 decode only accepts ASCII-printable results; character-split collapse only handles `.`, `-`, and `_` (space-separated splitting would flood false positives); leet substitutions outside the 8-char `LEET_MAP` table are not caught.
 - **Single-turn.** Multi-turn attacks (Crescendo, Skeleton Key) require stateful tracking in your application layer.
 - **Defense in depth.** See [Willison's Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) and [Meta's Agents Rule of Two](https://meta.com/blog/agents-rule-of-two/).
+
+## Non-goals
+
+Things this library does not attempt, so you can plan the layers above it:
+
+- **Semantic/paraphrase detection** — requires a trained classifier
+  (e.g. [Llama Prompt Guard 2](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M))
+  or an LLM judge. This library is the deterministic triage in front of them.
+- **Model-level defenses** — instruction hierarchy, StruQ/SecAlign-style
+  fine-tuning, and constitutional training happen inside the model; no
+  middleware can supply them.
+- **Orchestration-level defenses** — CaMeL-style plan-then-execute with
+  capability tracking, tool sandboxing, and least-privilege scoping live
+  in your agent framework, not in a text filter.
+- **Multimodal injection** — payloads carried in images, audio, or video
+  require vision-capable screening; this library only sees text.
+- **Multi-turn state** — cross-turn escalation tracking must live where
+  your session state lives.
 
 ## License
 
