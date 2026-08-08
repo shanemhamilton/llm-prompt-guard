@@ -5,8 +5,14 @@ export {
   count,
   assess,
   normalizeInput,
+  createSession,
   scanOutput,
 } from "./guard";
+export {
+  scanToolDefinition,
+  fingerprintTool,
+  wrapToolResult,
+} from "./agentic";
 export { BUILTIN_PATTERNS, NEUTRALIZATION_MAP, LEET_MAP, ensureGlobalFlag } from "./patterns";
 export { generateCanary, createOutputValidator } from "./output";
 export type {
@@ -30,4 +36,14 @@ export type {
   ExfilFinding,
   ExfilFindingType,
   PiiConfig,
+  ToolDefinition,
+  ToolFindingType,
+  ToolScanFinding,
+  ToolScanResult,
+  ToolFingerprint,
+  ToolResultOptions,
+  SessionConfig,
+  SessionGuard,
+  SessionState,
+  SessionAssessment,
 } from "./types";

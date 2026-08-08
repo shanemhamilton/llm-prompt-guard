@@ -420,3 +420,158 @@ export interface OutputScanResult {
   /** All findings raised during the scan. */
   findings: ExfilFinding[];
 }
+
+// ── Agentic surfaces: MCP tool poisoning, tool results, sessions ─────
+
+/**
+ * A tool definition to scan — shaped after the Model Context Protocol
+ * tool object, but any object with a name/description/schema works.
+ *
+ * Tool *descriptions* are read by the model as instructions, so a
+ * malicious or compromised server can inject through them without ever
+ * touching user input (Invariant Labs, 2025). Every string reachable in
+ * `inputSchema` is scanned too — CyberArk showed every field is a
+ * viable injection surface.
+ */
+export interface ToolDefinition {
+  /** Tool name as advertised to the model. */
+  name: string;
+  /** Natural-language description the model reads as instruction. */
+  description?: string;
+  /** JSON Schema (or any nested object); all string values are scanned. */
+  inputSchema?: unknown;
+}
+
+/** What kind of problem a tool-definition scan surfaced. */
+export type ToolFindingType =
+  /** A built-in injection pattern matched inside the definition. */
+  | "injection-pattern"
+  /** Obfuscation signals (hidden Unicode, homoglyphs, encoded text). */
+  | "obfuscation"
+  /** Instructions telling the model to conceal behavior from the user. */
+  | "concealment-instruction"
+  /** Instructions to read credentials or sensitive local files. */
+  | "credential-access"
+  /** Instructions redirecting or overriding *other* tools' behavior. */
+  | "tool-shadowing";
+
+/**
+ * A single finding from {@link scanToolDefinition}.
+ */
+export interface ToolScanFinding {
+  /** Which kind of problem this is. */
+  type: ToolFindingType;
+  /** Severity of the finding. */
+  severity: Severity;
+  /** Dotted path to the offending string (e.g. `inputSchema.properties.path.description`). */
+  location: string;
+  /** Human-readable explanation. */
+  detail: string;
+  /** First 120 characters of the offending text. */
+  preview: string;
+}
+
+/**
+ * Result of scanning a tool definition for poisoning.
+ */
+export interface ToolScanResult {
+  /** `true` when no findings were surfaced. */
+  safe: boolean;
+  /** All findings, most severe first. */
+  findings: ToolScanFinding[];
+  /**
+   * Highest risk contribution across findings, in [0, 1]. Server-side
+   * only — same oracle caveat as {@link AssessResult.score}.
+   */
+  score: number;
+}
+
+/**
+ * A stable fingerprint of a tool definition, used to detect "rug pull"
+ * attacks where a server swaps a tool's description after the user has
+ * approved it.
+ */
+export interface ToolFingerprint {
+  /** Tool name the fingerprint covers. */
+  name: string;
+  /** SHA-256 hex digest of the canonicalized definition. */
+  digest: string;
+}
+
+/**
+ * Options for {@link wrapToolResult}.
+ */
+export interface ToolResultOptions {
+  /** Label for the source (e.g. `"web_search"`, `"read_file"`). Appears in the system clause. */
+  sourceName?: string;
+  /** Maximum characters of tool output to include. Default: 8000. */
+  maxLength?: number;
+  /**
+   * Use a fresh per-call nonce on the delimiters so a poisoned tool
+   * result cannot forge the closing tag. Default: `true` — unlike
+   * user-input quarantine, tool results are attacker-reachable by
+   * default in agentic settings.
+   */
+  randomizeDelimiters?: boolean;
+}
+
+/**
+ * Rolling risk state for a single conversation, produced by
+ * {@link SessionGuard.record}.
+ */
+export interface SessionState {
+  /** Number of turns recorded. */
+  turns: number;
+  /** Sum of per-turn risk scores. */
+  cumulativeScore: number;
+  /** Highest single-turn score seen. */
+  peakScore: number;
+  /** Count of turns that scored above the suspicion threshold. */
+  flaggedTurns: number;
+  /**
+   * `true` when low-but-nonzero risk has accumulated across turns past
+   * `escalationThreshold` without any single turn crossing a blocking
+   * score — the Crescendo shape that per-message scanning misses.
+   */
+  escalating: boolean;
+}
+
+/**
+ * Result of recording one turn into a session.
+ */
+export interface SessionAssessment {
+  /** The single-turn assessment, unchanged. */
+  turn: AssessResult;
+  /** Session state *after* this turn. */
+  session: SessionState;
+  /**
+   * `true` when either this turn is individually high-risk or the
+   * session has crossed the escalation threshold. The single boolean
+   * most callers act on.
+   */
+  shouldReview: boolean;
+}
+
+/**
+ * Configuration for {@link createSession}.
+ */
+export interface SessionConfig {
+  /** Per-turn score at or above which a turn counts as flagged. Default: 0.3. */
+  suspicionThreshold?: number;
+  /** Cumulative score at or above which the session is escalating. Default: 1.5. */
+  escalationThreshold?: number;
+}
+
+/**
+ * A per-conversation accumulator. Create one per conversation; the
+ * caller owns persistence (serialize {@link SessionState} alongside
+ * your own session storage).
+ */
+export interface SessionGuard {
+  /** Assess one turn of user input and fold it into session state. */
+  record(input: string): SessionAssessment;
+  /** Current session state without recording a turn. */
+  state(): SessionState;
+  /** Clear accumulated state (e.g. after a verified human handoff). */
+  reset(): void;
+}

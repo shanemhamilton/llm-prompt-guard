@@ -13,7 +13,10 @@ import type {
   OutputValidatorConfig,
   SanitizationMode,
   SanitizationResult,
+  SessionConfig,
+  SessionGuard,
 } from "./types";
+import { createSessionWith } from "./session";
 import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
@@ -315,6 +318,20 @@ export function createGuard(config: GuardConfig = {}) {
     },
 
     /**
+     * Create a per-conversation risk accumulator that honors this
+     * guard's pattern configuration. Catches multi-turn escalation
+     * (Crescendo) that per-message scanning structurally misses.
+     *
+     * Create one per conversation; the caller owns persistence.
+     */
+    createSession(sessionConfig?: SessionConfig): SessionGuard {
+      return createSessionWith(
+        (input: string) => assessInput(input, patterns, maxAnalyzedLength),
+        sessionConfig
+      );
+    },
+
+    /**
      * Returns the active pattern list (built-ins + extras, minus disabled categories).
      * Useful for testing and auditing.
      */
@@ -404,6 +421,32 @@ export function assess(input: string): AssessResult {
  */
 export function normalizeInput(input: string): NormalizeResult {
   return normalizeInputImpl(input);
+}
+
+/**
+ * Create a per-conversation risk accumulator using the built-in
+ * patterns. For a session that honors custom patterns, use
+ * `createGuard({ extraPatterns }).createSession()`.
+ *
+ * Catches multi-turn escalation (Crescendo) that per-message scanning
+ * structurally misses: every individual message can score below any
+ * sane blocking threshold while risk accumulates across the session.
+ *
+ * @example
+ * ```ts
+ * const session = createSession();
+ *
+ * for (const message of conversation) {
+ *   const r = session.record(message);
+ *   if (r.shouldReview) escalateToHuman(r.session);
+ * }
+ * ```
+ */
+export function createSession(config?: SessionConfig): SessionGuard {
+  return createSessionWith(
+    (input: string) => assessInput(input, BUILTIN_PATTERNS),
+    config
+  );
 }
 
 // ── Core implementation ──────────────────────────────────────────────
