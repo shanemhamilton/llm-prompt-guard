@@ -373,3 +373,24 @@ export const INVISIBLE_CHARS =
  */
 export const INVISIBLE_CHARS_SUPPLEMENTARY =
   /[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
+
+/**
+ * An invisible character sandwiched between ASCII letters — the
+ * keyword-interleave evasion shape (`i​g​n​o​r​e`). Deliberately scoped to
+ * letter-adjacent positions so legitimate uses of the same code points
+ * (emoji variation selectors, Persian ZWNJ between Arabic letters, RTL
+ * marks, soft hyphens at line-break points) do not count as evidence.
+ *
+ * Internal — feeds `NormalizationSignals.interleavedInvisibles`.
+ */
+export const INTERLEAVED_INVISIBLE =
+  /[A-Za-z][\u00AD\u200B-\u200F\u2060-\u2064\uFEFF]+[A-Za-z]/g;
+
+/**
+ * Any Cyrillic or Greek letter (full blocks — wider than the confusable
+ * subset in the homoglyph map). Used to distinguish genuine
+ * Cyrillic/Greek text from Latin text salted with look-alikes.
+ *
+ * Internal — feeds `NormalizationSignals.suspiciousHomoglyphs`.
+ */
+export const CYRILLIC_GREEK = /[\u0370-\u03FF\u0400-\u04FF\u0500-\u052F]/g;

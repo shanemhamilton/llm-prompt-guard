@@ -101,6 +101,12 @@ export interface SanitizationResult {
    * original text where an injection pattern was detected.
    */
   tags?: InjectionTag[];
+  /**
+   * Obfuscation evidence from the normalization pipeline. Present for
+   * inputs that went through detection (absent for empty/invalid
+   * input). Server-side only — same oracle caveat as `patternsDetected`.
+   */
+  signals?: NormalizationSignals;
 }
 
 /**
@@ -243,7 +249,15 @@ export interface OutputValidator {
 export interface GuardConfig {
   /** Custom logger. Defaults to silent (no logging). */
   logger?: Logger;
-  /** Additional patterns to append to the built-in set. */
+  /**
+   * Additional patterns to append to the built-in set.
+   *
+   * **ReDoS contract:** custom patterns run on every call against
+   * attacker-controlled text and are NOT sandboxed or validated. Keep
+   * them linear-time — avoid nested quantifiers like `(a+)+` and
+   * overlapping alternations with a shared suffix. A catastrophic
+   * custom regex is a self-inflicted denial of service.
+   */
   extraPatterns?: InjectionPattern[];
   /** Built-in pattern categories to disable (e.g., ["confidence-manipulation"]). */
   disableCategories?: string[];
@@ -265,6 +279,108 @@ export interface GuardConfig {
    * host matches an allowlist entry will not produce a finding.
    */
   allowedOrigins?: string[];
+  /**
+   * Maximum number of characters the detection pipeline analyzes per
+   * call. Input beyond this cap is ignored by detection (the cap bounds
+   * worst-case CPU on adversarially long inputs) and the truncation is
+   * surfaced as `signals.truncatedForAnalysis`. Pair with
+   * `FieldConfig.maxLength`, which bounds what reaches your prompt.
+   *
+   * Default: 100 000. Must be a positive finite number if set.
+   */
+  maxAnalyzedLength?: number;
+}
+
+/**
+ * Obfuscation evidence gathered by the normalization pipeline,
+ * independent of whether any injection pattern matched. Obfuscation is
+ * itself a signal: benign users do not smuggle text in invisible
+ * Unicode ranges.
+ */
+export interface NormalizationSignals {
+  /**
+   * `true` when Plane-14 Tag-block code points (U+E0020–U+E007E)
+   * decoded to a hidden ASCII payload. There is no legitimate use of
+   * tag characters carrying text in user input, so this is treated as
+   * a high-severity detection in its own right.
+   */
+  tagBlockPayload: boolean;
+  /**
+   * Count of invisible characters interleaved *between ASCII letters*
+   * (the evasion shape, e.g. `i​g​n​o​r​e`).
+   * Scoped to letter-adjacent positions so emoji variation selectors,
+   * Persian ZWNJ, and RTL marks in genuine non-Latin text do not count.
+   */
+  interleavedInvisibles: number;
+  /**
+   * `true` when the text mixes Latin letters with Cyrillic/Greek
+   * characters that are ALL Latin look-alikes (≥2 confusables and no
+   * other Cyrillic/Greek). Genuine Russian or Greek text contains
+   * non-confusable letters and does not trip this.
+   */
+  suspiciousHomoglyphs: boolean;
+  /**
+   * `true` when a base64 segment decoded to printable ASCII that looks
+   * like natural text (≥12 chars containing a space) — encoded prose
+   * smuggled past keyword filters.
+   */
+  base64DecodedText: boolean;
+  /**
+   * `true` when the input exceeded `maxAnalyzedLength` and detection
+   * only analyzed the leading window.
+   */
+  truncatedForAnalysis: boolean;
+}
+
+/**
+ * Result of `normalizeInput()` — the guard's normalization pipeline
+ * exposed standalone, for callers who feed a downstream ML classifier
+ * or LLM judge. Character-level smuggling (homoglyphs, zero-width,
+ * tag-block) defeats ML guards too; normalize first, then classify.
+ */
+export interface NormalizeResult {
+  /**
+   * Output-safe normalized text: invisibles stripped (BMP + Plane 14 +
+   * Variation Selector Supplement), NFKD, diacritics stripped,
+   * homoglyphs mapped to Latin. Non-lossy for legitimate content — no
+   * leetspeak/URL-decode/reversal applied.
+   */
+  text: string;
+  /**
+   * Hidden payloads recovered during normalization: Plane-14 tag-block
+   * ASCII and base64 segments that decoded to printable text. Feed
+   * `[text, ...decoded].join(" ")` to a downstream classifier so it
+   * sees what the LLM would see.
+   */
+  decoded: string[];
+  /** Obfuscation evidence gathered while normalizing. */
+  signals: NormalizationSignals;
+}
+
+/**
+ * Result of `assess()` — a weighted risk score combining pattern
+ * matches with obfuscation signals.
+ *
+ * **Security note:** like `patternsDetected`, do not expose the score
+ * or reasons to end users — they form an oracle. Server-side only.
+ */
+export interface AssessResult {
+  /**
+   * Risk score in [0, 1]. Additive over contributors, capped at 1:
+   * high-severity pattern match 1.0, medium 0.5, tag-block payload 0.9,
+   * suspicious homoglyphs 0.3, interleaved invisibles 0.3, decoded
+   * base64 text 0.2, analysis truncation 0.1. Deterministic and
+   * explainable via `reasons` — not a probability.
+   */
+  score: number;
+  /** Number of distinct injection patterns that matched. */
+  patternsDetected: number;
+  /** `true` when at least one matched pattern is high severity. */
+  hasHighSeverity: boolean;
+  /** Obfuscation evidence from the normalization pipeline. */
+  signals: NormalizationSignals;
+  /** Human-readable list of score contributors (server-side only). */
+  reasons: string[];
 }
 
 /**

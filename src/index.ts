@@ -1,4 +1,12 @@
-export { createGuard, sanitize, detect, count, scanOutput } from "./guard";
+export {
+  createGuard,
+  sanitize,
+  detect,
+  count,
+  assess,
+  normalizeInput,
+  scanOutput,
+} from "./guard";
 export { BUILTIN_PATTERNS, NEUTRALIZATION_MAP, LEET_MAP, ensureGlobalFlag } from "./patterns";
 export { generateCanary, createOutputValidator } from "./output";
 export type {
@@ -11,6 +19,9 @@ export type {
   InjectionPattern,
   Logger,
   Severity,
+  AssessResult,
+  NormalizeResult,
+  NormalizationSignals,
   OutputValidationResult,
   OutputFlag,
   OutputValidator,

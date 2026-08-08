@@ -1,10 +1,13 @@
 import type {
+  AssessResult,
   ExfilFinding,
   FieldConfig,
   GuardConfig,
   InjectionPattern,
   InjectionTag,
   Logger,
+  NormalizationSignals,
+  NormalizeResult,
   OutputScanResult,
   OutputValidationResult,
   OutputValidatorConfig,
@@ -14,6 +17,8 @@ import type {
 import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
+  CYRILLIC_GREEK,
+  INTERLEAVED_INVISIBLE,
   INVISIBLE_CHARS,
   INVISIBLE_CHARS_SUPPLEMENTARY,
   LEET_MAP,
@@ -30,6 +35,33 @@ const SILENT_LOGGER: Logger = {
 
 const DEFAULT_OPEN_TAG = "<untrusted_input>";
 const DEFAULT_CLOSE_TAG = "</untrusted_input>";
+
+/**
+ * Detection analyzes at most this many characters per call unless
+ * `GuardConfig.maxAnalyzedLength` overrides it. Bounds worst-case CPU:
+ * the detection string is ~4× the analyzed input and every pattern
+ * scans it, so unbounded input is a self-inflicted DoS vector.
+ */
+const DEFAULT_MAX_ANALYZED_LENGTH = 100_000;
+
+// ── Risk-score weights (assess) ──────────────────────────────────────
+// Additive, capped at 1. Deterministic and explainable — not a
+// probability. Signal weights are deliberately below any blocking
+// threshold a caller would choose alone; only pattern matches and
+// tag-block payloads reach block-worthy scores on their own.
+const SCORE_HIGH_PATTERN = 1.0;
+const SCORE_MEDIUM_PATTERN = 0.5;
+const SCORE_TAG_BLOCK = 0.9;
+const SCORE_HOMOGLYPH = 0.3;
+const SCORE_INTERLEAVE = 0.3;
+const SCORE_BASE64_TEXT = 0.2;
+const SCORE_TRUNCATED = 0.1;
+/** Interleaved-invisible occurrences required before the signal scores. */
+const INTERLEAVE_SCORE_THRESHOLD = 3;
+/** Confusable Cyrillic/Greek letters required to flag mixed script. */
+const HOMOGLYPH_SIGNAL_THRESHOLD = 2;
+/** Minimum decoded-base64 length (with a space) to count as hidden text. */
+const MIN_DECODED_PHRASE_LENGTH = 12;
 
 // ── Output scanning (exfiltration-shape detection) ───────────────────
 
@@ -203,6 +235,17 @@ export function createGuard(config: GuardConfig = {}) {
   // clean path so downstream LLM prompts never carry smuggled payloads.
   const normalizeOutput = config.normalizeOutput !== false;
   const allowedOrigins = config.allowedOrigins ?? [];
+  if (
+    config.maxAnalyzedLength !== undefined &&
+    (typeof config.maxAnalyzedLength !== "number" ||
+      !Number.isFinite(config.maxAnalyzedLength) ||
+      config.maxAnalyzedLength <= 0)
+  ) {
+    throw new RangeError(
+      `GuardConfig.maxAnalyzedLength must be a positive finite number, got: ${config.maxAnalyzedLength}`
+    );
+  }
+  const maxAnalyzedLength = config.maxAnalyzedLength ?? DEFAULT_MAX_ANALYZED_LENGTH;
 
   return {
     /**
@@ -224,16 +267,18 @@ export function createGuard(config: GuardConfig = {}) {
         patterns,
         log,
         userId,
-        normalizeOutput
+        normalizeOutput,
+        maxAnalyzedLength
       );
     },
 
     /**
-     * Detection-only check. Returns `true` if any injection pattern matches.
-     * Does not modify the input. Applies Unicode normalization before checking.
+     * Detection-only check. Returns `true` if any injection pattern
+     * matches or a Plane-14 tag-block payload is present. Does not
+     * modify the input. Applies Unicode normalization before checking.
      */
     detect(input: string): boolean {
-      return containsInjection(input, patterns);
+      return containsInjection(input, patterns, maxAnalyzedLength);
     },
 
     /**
@@ -243,7 +288,30 @@ export function createGuard(config: GuardConfig = {}) {
      * **Do not expose this count to end users** — it enables oracle attacks.
      */
     count(input: string): number {
-      return countPatterns(input, patterns);
+      return countPatterns(input, patterns, maxAnalyzedLength);
+    },
+
+    /**
+     * Weighted risk score in [0, 1] combining pattern matches with
+     * obfuscation signals (tag-block payloads, confusable homoglyphs,
+     * interleaved invisibles, base64-hidden text). Use when you want a
+     * threshold instead of a boolean — e.g. block ≥0.9, review ≥0.3.
+     *
+     * **Do not expose the score or reasons to end users** — oracle risk.
+     */
+    assess(input: string): AssessResult {
+      return assessInput(input, patterns, maxAnalyzedLength);
+    },
+
+    /**
+     * The guard's normalization pipeline, standalone: de-smuggled
+     * output-safe text plus recovered hidden payloads and obfuscation
+     * signals. Feed `[text, ...decoded].join(" ")` to a downstream ML
+     * classifier or LLM judge so it sees what the LLM would see —
+     * character-level smuggling defeats ML guards too.
+     */
+    normalizeInput(input: string): NormalizeResult {
+      return normalizeInputImpl(input, maxAnalyzedLength);
     },
 
     /**
@@ -321,6 +389,21 @@ export function detect(input: string): boolean {
  */
 export function count(input: string): number {
   return countPatterns(input, BUILTIN_PATTERNS);
+}
+
+/**
+ * One-shot risk assessment using built-in patterns. See
+ * `createGuard().assess` for the scoring model.
+ */
+export function assess(input: string): AssessResult {
+  return assessInput(input, BUILTIN_PATTERNS);
+}
+
+/**
+ * One-shot standalone normalization. See `createGuard().normalizeInput`.
+ */
+export function normalizeInput(input: string): NormalizeResult {
+  return normalizeInputImpl(input);
 }
 
 // ── Core implementation ──────────────────────────────────────────────
@@ -483,11 +566,52 @@ function normalizeForOutput(input: string): string {
  * Step 10:    Append reversed normalized text (append)
  */
 /**
- * Returns { inPlace, detection } where:
+ * Compute the suspicious-homoglyph signal: the text mixes Latin letters
+ * with Cyrillic/Greek characters that are ALL Latin look-alikes (≥2
+ * confusables from HOMOGLYPH_MAP and no other Cyrillic/Greek letters).
+ * Genuine Russian/Greek text contains non-confusable letters and never
+ * trips this; a Latin text salted with "і"/"о"/"е" does.
+ */
+function hasSuspiciousHomoglyphs(input: string): boolean {
+  const cyrillicGreek = input.match(CYRILLIC_GREEK);
+  if (!cyrillicGreek) return false;
+  let confusables = 0;
+  for (const ch of cyrillicGreek) {
+    if (HOMOGLYPH_MAP[ch] === undefined) return false; // genuine script
+    confusables++;
+  }
+  return confusables >= HOMOGLYPH_SIGNAL_THRESHOLD && /[A-Za-z]/.test(input);
+}
+
+interface DetectionNormalization {
+  /** Text after in-place transforms — safe for excise/neutralize. */
+  inPlace: string;
+  /** Full string with appended variants — pattern matching only. */
+  detection: string;
+  /** Obfuscation evidence gathered while normalizing. */
+  signals: NormalizationSignals;
+  /** Hidden payloads recovered: tag-block ASCII, base64→text segments. */
+  decoded: string[];
+}
+
+/**
+ * Returns { inPlace, detection, signals, decoded } where:
  * - `inPlace` is the text after all in-place transformations (steps 1-8) — safe for excise/neutralize
  * - `detection` is the full string with appended variants (steps 9-11) — used for pattern matching only
+ * - `signals` / `decoded` carry obfuscation evidence and recovered payloads
+ *
+ * Analysis is capped at `maxAnalyzedLength` characters; longer inputs
+ * are truncated for this pipeline and flagged via
+ * `signals.truncatedForAnalysis`.
  */
-function normalizeForDetection(input: string): { inPlace: string; detection: string } {
+function normalizeForDetection(
+  rawInput: string,
+  maxAnalyzedLength: number = DEFAULT_MAX_ANALYZED_LENGTH
+): DetectionNormalization {
+  const truncatedForAnalysis = rawInput.length > maxAnalyzedLength;
+  const input = truncatedForAnalysis
+    ? rawInput.slice(0, maxAnalyzedLength)
+    : rawInput;
   // Step 1a: Decode Plane 14 tag characters to their ASCII mirror BEFORE
   // stripping. The Tag block (U+E0000–U+E007F) encodes the ASCII range
   // (U+0020 = space through U+007F = DEL) one-for-one as invisible code
@@ -583,7 +707,26 @@ function normalizeForDetection(input: string): { inPlace: string; detection: str
   // Step 11: Append reversed in-place-normalized text
   result += " " + normalizedInPlace.split("").reverse().join("");
 
-  return { inPlace: normalizedInPlace, detection: result };
+  // Obfuscation signals — evidence gathered in passing above. The
+  // decoding pipeline already recovered these payloads; their mere
+  // presence is signal regardless of what the payload says.
+  const base64Phrases = decodedSegments.filter(
+    (d) => d.length >= MIN_DECODED_PHRASE_LENGTH && d.includes(" ")
+  );
+  const signals: NormalizationSignals = {
+    tagBlockPayload: decodedTagSegments.length > 0,
+    interleavedInvisibles: (input.match(INTERLEAVED_INVISIBLE) ?? []).length,
+    suspiciousHomoglyphs: hasSuspiciousHomoglyphs(input),
+    base64DecodedText: base64Phrases.length > 0,
+    truncatedForAnalysis,
+  };
+
+  return {
+    inPlace: normalizedInPlace,
+    detection: result,
+    signals,
+    decoded: [...decodedTagSegments, ...base64Phrases],
+  };
 }
 
 // ── Mode implementations ─────────────────────────────────────────────
@@ -766,7 +909,8 @@ function sanitizeForPrompt(
   patterns: InjectionPattern[],
   log: Logger,
   userId?: string,
-  normalizeOutput: boolean = true
+  normalizeOutput: boolean = true,
+  maxAnalyzedLength: number = DEFAULT_MAX_ANALYZED_LENGTH
 ): SanitizationResult {
   // Validate config to prevent silent bypass via NaN/negative maxLength.
   validateFieldConfig(field);
@@ -809,8 +953,11 @@ function sanitizeForPrompt(
 
   // Step 2: Normalize for detection — in-place transforms + appended variants.
   // Detection runs against the full detection string; excise/neutralize use inPlace only.
-  const { inPlace: normalizedInPlace, detection: normalizedDetection } =
-    normalizeForDetection(sanitized);
+  const {
+    inPlace: normalizedInPlace,
+    detection: normalizedDetection,
+    signals,
+  } = normalizeForDetection(sanitized, maxAnalyzedLength);
 
   // Step 3: Detect injection patterns on full detection string.
   let hasHighSeverity = false;
@@ -821,6 +968,15 @@ function sanitizeForPrompt(
         hasHighSeverity = true;
       }
     }
+  }
+
+  // Step 3a: A Plane-14 tag-block payload is a high-severity detection
+  // in its own right — there is no legitimate reason for user input to
+  // carry text in invisible tag characters, regardless of what the
+  // smuggled payload says.
+  if (signals.tagBlockPayload) {
+    patternsDetected++;
+    hasHighSeverity = true;
   }
 
   // Step 3b: Clean-path normalization (block/neutralize/excise modes only).
@@ -867,6 +1023,7 @@ function sanitizeForPrompt(
             blockReason: "Invalid input",
             patternsDetected,
             mode,
+            signals,
           };
         }
         // Medium severity in block mode: neutralize (legacy compat).
@@ -902,6 +1059,7 @@ function sanitizeForPrompt(
         patternsDetected,
         mode,
         systemClause,
+        signals,
       };
     }
 
@@ -919,6 +1077,7 @@ function sanitizeForPrompt(
         patternsDetected,
         mode,
         tags,
+        signals,
       };
     }
   }
@@ -943,6 +1102,7 @@ function sanitizeForPrompt(
     wasBlocked: false,
     patternsDetected,
     mode,
+    signals,
   };
 }
 
@@ -956,10 +1116,16 @@ function neutralize(input: string): string {
 
 function containsInjection(
   input: string,
-  patterns: InjectionPattern[]
+  patterns: InjectionPattern[],
+  maxAnalyzedLength?: number
 ): boolean {
   if (!input) return false;
-  const { detection } = normalizeForDetection(String(input));
+  const { detection, signals } = normalizeForDetection(
+    String(input),
+    maxAnalyzedLength
+  );
+  // Tag-block payloads count as detections — see sanitizeForPrompt step 3a.
+  if (signals.tagBlockPayload) return true;
   for (const { pattern } of patterns) {
     if (pattern.test(detection)) return true;
   }
@@ -968,13 +1134,120 @@ function containsInjection(
 
 function countPatterns(
   input: string,
-  patterns: InjectionPattern[]
+  patterns: InjectionPattern[],
+  maxAnalyzedLength?: number
 ): number {
   if (!input) return 0;
-  const { detection } = normalizeForDetection(String(input));
+  const { detection, signals } = normalizeForDetection(
+    String(input),
+    maxAnalyzedLength
+  );
   let n = 0;
+  if (signals.tagBlockPayload) n++;
   for (const { pattern } of patterns) {
     if (pattern.test(detection)) n++;
   }
   return n;
+}
+
+/** Empty-input signals — every field at its benign zero value. */
+function emptySignals(): NormalizationSignals {
+  return {
+    tagBlockPayload: false,
+    interleavedInvisibles: 0,
+    suspiciousHomoglyphs: false,
+    base64DecodedText: false,
+    truncatedForAnalysis: false,
+  };
+}
+
+function assessInput(
+  input: string,
+  patterns: InjectionPattern[],
+  maxAnalyzedLength?: number
+): AssessResult {
+  if (!input) {
+    return {
+      score: 0,
+      patternsDetected: 0,
+      hasHighSeverity: false,
+      signals: emptySignals(),
+      reasons: [],
+    };
+  }
+
+  const { detection, signals } = normalizeForDetection(
+    String(input),
+    maxAnalyzedLength
+  );
+
+  let patternsDetected = 0;
+  let hasHighSeverity = false;
+  let hasMediumSeverity = false;
+  for (const { pattern, severity } of patterns) {
+    if (pattern.test(detection)) {
+      patternsDetected++;
+      if (severity === "high") hasHighSeverity = true;
+      else hasMediumSeverity = true;
+    }
+  }
+
+  let score = 0;
+  const reasons: string[] = [];
+  if (hasHighSeverity) {
+    score += SCORE_HIGH_PATTERN;
+    reasons.push("high-severity pattern match");
+  } else if (hasMediumSeverity) {
+    score += SCORE_MEDIUM_PATTERN;
+    reasons.push("medium-severity pattern match");
+  }
+  if (signals.tagBlockPayload) {
+    score += SCORE_TAG_BLOCK;
+    reasons.push("Plane-14 tag-block payload");
+  }
+  if (signals.suspiciousHomoglyphs) {
+    score += SCORE_HOMOGLYPH;
+    reasons.push("Latin text salted with confusable Cyrillic/Greek");
+  }
+  if (signals.interleavedInvisibles >= INTERLEAVE_SCORE_THRESHOLD) {
+    score += SCORE_INTERLEAVE;
+    reasons.push(
+      `invisible characters interleaved between letters (${signals.interleavedInvisibles})`
+    );
+  }
+  if (signals.base64DecodedText) {
+    score += SCORE_BASE64_TEXT;
+    reasons.push("base64 segment decoded to natural-language text");
+  }
+  if (signals.truncatedForAnalysis) {
+    score += SCORE_TRUNCATED;
+    reasons.push("input exceeded analysis window — tail not analyzed");
+  }
+
+  return {
+    score: Math.min(1, score),
+    patternsDetected: patternsDetected + (signals.tagBlockPayload ? 1 : 0),
+    hasHighSeverity: hasHighSeverity || signals.tagBlockPayload,
+    signals,
+    reasons,
+  };
+}
+
+function normalizeInputImpl(
+  input: string,
+  maxAnalyzedLength: number = DEFAULT_MAX_ANALYZED_LENGTH
+): NormalizeResult {
+  if (!input) {
+    return { text: "", decoded: [], signals: emptySignals() };
+  }
+  const raw = String(input);
+  const { signals, decoded } = normalizeForDetection(raw, maxAnalyzedLength);
+  const analyzed = signals.truncatedForAnalysis
+    ? raw.slice(0, maxAnalyzedLength)
+    : raw;
+  return {
+    text: normalizeForOutput(analyzed.replace(CONTROL_CHARS, "")),
+    decoded,
+    signals,
+  };
 }
