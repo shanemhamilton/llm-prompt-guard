@@ -11,6 +11,13 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.1.2](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.1...v2.1.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **ci:** let release-please use a PAT so releases actually publish ([#27](https://github.com/shanemhamilton/llm-prompt-guard/issues/27)) ([5bada21](https://github.com/shanemhamilton/llm-prompt-guard/commit/5bada217b184c7902781ceb7e4a6d6a7d0b6ba50))
+
 ## [2.1.1](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.0...v2.1.1) (2026-08-08)
 
 

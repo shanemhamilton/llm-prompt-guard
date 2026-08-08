@@ -1,6 +1,6 @@
 {
   "name": "llm-prompt-guard",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Sub-millisecond Layer-1 prompt-injection defense for TypeScript: detection triage, encoding-bypass normalization, quarantine/spotlighting, canary and output scanning. Zero dependencies.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
