@@ -19,6 +19,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [2.1.0] - 2026-08-08
+
+Modernization release. The theme is that **obfuscation is now treated as
+evidence in its own right**, the normalization pipeline is usable
+standalone in front of any model-based guard, and the agentic surfaces
+(MCP tools, tool results, multi-turn sessions) are covered.
+
+### Added
+
+- **`assess(input)` — weighted risk scoring.** Returns a `[0, 1]` score
+  plus explainable `reasons`, combining pattern severity with
+  obfuscation signals. Scoring is additive and deterministic (high
+  pattern 1.0, tag-block payload 0.9, medium 0.5, homoglyphs 0.3,
+  interleaved invisibles 0.3, base64-hidden text 0.2, analysis
+  truncation 0.1), capped at 1. It is not a probability. Available as
+  `guard.assess()` and as a one-shot export.
+- **`normalizeInput(input)` — the pipeline, standalone.** Returns
+  output-safe normalized text, the `decoded[]` payloads recovered from
+  tag-block and base64 smuggling, and the obfuscation `signals`. Intended
+  for feeding a downstream ML classifier or LLM judge: character-level
+  smuggling defeats those too, so normalizing first is the point.
+- **`GuardConfig.maxAnalyzedLength`** (default `100_000`). Detection
+  previously applied `maxLength` only *after* normalization, so a 5 MB
+  input paid the full cost of building a ~4× detection string and
+  scanning every pattern over it. Measured 171 ms → 7.4 ms per
+  `detect()` call on that input.
+- **`scanToolDefinition(tool)` — MCP tool-poisoning detection.** Walks a
+  tool's name, description, and every string reachable in `inputSchema`,
+  reporting `concealment-instruction`, `credential-access`,
+  `tool-shadowing`, `injection-pattern`, and `obfuscation` findings.
+  Traversal is depth- and count-bounded and cycle-safe, so a hostile
+  schema cannot stall the scan. These patterns run **only** against tool
+  definitions: "do not mention this to anyone" is unremarkable from a
+  user and malicious from a tool description.
+- **`fingerprintTool(tool)` — rug-pull detection.** Canonicalized
+  SHA-256 digest (async, Web Crypto) so a server that swaps a tool's
+  description after approval is detectable. A fast non-cryptographic
+  hash would be the wrong primitive here: the attacker controls the text
+  being hashed. Key order is canonicalized, so cosmetic reordering is
+  not a false alarm.
+- **`wrapToolResult(result, options)`** — quarantine preset for tool
+  output, with nonced delimiters **on by default** (tool results are
+  attacker-reachable in a way user-input fields often are not) and a
+  system clause naming the source. This is OWASP LLM01's "segregate
+  external content".
+- **`createSession(config?)` — multi-turn risk accumulation.** Crescendo
+  attacks distribute intent so no single turn crosses a blocking
+  threshold; the session accumulates per-turn risk and reports
+  `escalating` / `shouldReview`. Counters and thresholds, not a model.
+  `guard.createSession()` honors the guard's custom patterns.
+- **Public-dataset benchmark** (`npm run bench:public`) scoring
+  `detect()` against [deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections)
+  (662 labeled rows, EN+DE, Apache-2.0, vendored for zero-network CI),
+  gated in CI with regression floors. Measured: **100% precision, 0.00%
+  FPR, 11.0% recall** (core+multilingual). The low recall is published
+  deliberately — that corpus is dominated by task-drift attacks with no
+  injection vocabulary, which regex detection structurally cannot catch.
+
+### Changed
+
+- **A Plane-14 tag-block payload is now a high-severity detection** in
+  `detect()`, `count()`, and `sanitize()`, not merely something decoded
+  before matching. Previously a paraphrased injection smuggled in
+  invisible tag characters decoded cleanly, matched no pattern, and
+  returned `patternsDetected: 0`. **This can block input that previously
+  passed** in `block` mode. There is no legitimate reason for user input
+  to carry text in invisible tag characters. The fuzzier signals
+  (homoglyphs, invisibles, base64) deliberately do *not* block on their
+  own — they have benign explanations and feed `assess()` only.
+- **`SanitizationResult.signals`** now carries the obfuscation evidence
+  for inputs that went through detection. Server-side only, same oracle
+  caveat as `patternsDetected`.
+- **Repositioned as a Layer-1 filter** across README, package
+  description, and repo metadata. "Firewall" is gone: the README now
+  leads with the normalization pipeline and spotlighting, publishes
+  measured precision/recall, and states explicit non-goals (semantic
+  paraphrase, model-level defenses, orchestration-level enforcement,
+  multimodal).
+- Development tooling: ESLint 9 flat config, with lint gated in CI.
+
+### Fixed
+
+- **Instruction-override patterns missed the canonical phrasing.** The
+  article slot accepted only "all", so `"ignore the above instructions"`
+  — the original Goodside (2022) formulation — matched nothing. Widened
+  to all/the/any/your, added "preceding", and widened the object-noun
+  list. The German pack now accepts intervening adverbs, a wider noun
+  list, and the inverted "jetzt bist du" word order. Public-dataset
+  recall 7.2% → 11.0% at unchanged 100% precision and 0.00% FPR.
+- **`SECURITY.md` was factually stale**, claiming base64/ROT13/URL
+  encodings are not decoded before matching — untrue since v2.0, which
+  decodes all three — and listing only 1.x as supported.
+- **ReDoS regression test flaked on CI.** Its 500 ms wall-clock ceiling
+  failed at 598 ms on a loaded shared runner. Scaling was re-measured to
+  confirm the email regex is still linear (125k/250k/500k/1000k chars →
+  34/61/121/287 ms locally); the ceiling is now 3 s, which retains ~6×
+  margin below the pre-fix ~18 s behavior while tolerating a slow runner.
+
+### Security
+
+- Closes the smuggled-paraphrase gap described under **Changed**: an
+  injection that carried no pattern vocabulary but arrived inside
+  Plane-14 tag characters was previously reported as clean.
+- Documents the **`extraPatterns` ReDoS contract** — custom patterns are
+  not sandboxed or validated and run against attacker-controlled text on
+  every call.
+
+### Known limitations (unchanged)
+
+- Multi-turn accumulation still depends on a regex-based per-turn
+  scorer: a Crescendo whose every turn is plainly worded scores 0 per
+  turn and never accumulates.
+- `scanToolDefinition` reads what a server *advertises*; it cannot
+  constrain what a tool does when executed. Sandboxing and capability
+  scoping remain the agent runtime's responsibility.
+
+## [2.0.2] - 2026-05-24
+
+### Security
+
+- Resolved transitive devDependency advisories (handlebars, minimatch,
+  picomatch, brace-expansion) via `npm audit fix`. No runtime code
+  changed — the published package has zero runtime dependencies.
+
 ## [2.0.1] - 2026-04-18
 
 ### Security
