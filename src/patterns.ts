@@ -11,23 +11,27 @@ import type { InjectionPattern } from "./types";
  */
 export const BUILTIN_PATTERNS: InjectionPattern[] = [
   // ── Instruction override ──────────────────────────────────────────
+  // Article slot accepts all/the/any/your — "ignore the above
+  // instructions" is the original Goodside (2022) phrasing and was
+  // missed when only "all" was allowed.
   {
-    pattern: /ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions?/i,
+    pattern:
+      /ignore\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)\s+(instructions?|prompts?|orders?|rules?|tasks?|directives?)/i,
     severity: "high",
     category: "instruction-override",
   },
   {
-    pattern: /disregard\s+(all\s+)?(previous|prior|above|earlier)/i,
+    pattern: /disregard\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)/i,
     severity: "high",
     category: "instruction-override",
   },
   {
-    pattern: /forget\s+(all\s+)?(previous|prior|above|earlier)/i,
+    pattern: /forget\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)/i,
     severity: "high",
     category: "instruction-override",
   },
   {
-    pattern: /override\s+(all\s+)?(previous|prior|above|earlier)/i,
+    pattern: /override\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)/i,
     severity: "high",
     category: "instruction-override",
   },

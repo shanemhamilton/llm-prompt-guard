@@ -140,16 +140,18 @@ export const french: InjectionPattern[] = [
 export const german: InjectionPattern[] = [
   {
     // "ignoriere (alle) (vorherigen|vorigen) (anweisungen|anleitungen)"
-    // "vergiss (alle)? (vorherigen|vorigen) anweisungen"
-    pattern: /\b(ignoriere|vergiss)\s+(alle\s+)?(vorherigen|vorigen|fruheren)\s+(anweisungen|anleitungen|befehle)/ui,
+    // "vergiss (nun|jetzt|bitte)? (alle)? (vorherigen|vorigen) anweisungen"
+    // Noun list includes aufgaben/angaben/informationen — real corpora
+    // say "vergiss alle vorherigen Aufgaben" as often as "Anweisungen".
+    pattern: /\b(ignoriere|vergiss)\s+(?:(?:nun|jetzt|bitte)\s+)?(alle\s+)?(vorherigen|vorigen|fruheren|bisherigen)\s+(anweisungen|anleitungen|befehle|aufgaben|angaben|informationen|regeln)/ui,
     severity: "high",
     category: "instruction-override-de",
   },
   {
-    // "du bist jetzt (ein|eine)"
+    // "du bist jetzt (ein|eine)" / inverted "jetzt bist du"
     // "verhalte dich wie (ein|eine)"
     // "spiele (die rolle von|einen|eine)"
-    pattern: /\b(du\s+bist\s+jetzt|verhalte\s+dich\s+wie|spiele\s+(die\s+rolle\s+von|einen|eine))\b/ui,
+    pattern: /\b(du\s+bist\s+jetzt|jetzt\s+bist\s+du|verhalte\s+dich\s+wie|spiele\s+(die\s+rolle\s+von|einen|eine))\b/ui,
     severity: "high",
     category: "role-hijacking-de",
   },
