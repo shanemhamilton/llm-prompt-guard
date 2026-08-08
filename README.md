@@ -5,8 +5,10 @@ Zero dependencies. Sub-millisecond. A normalization pipeline that defeats
 encoding bypasses (leet, base64, ROT13, Unicode Plane 14, homoglyphs) —
 the same character-level smuggling shown to defeat ML-based guards —
 plus regex triage, quarantine/spotlighting with nonced delimiters, canary
-validation, and exfiltration-shape output scanning. Not a firewall: it is
-the microsecond first layer of a defense-in-depth stack, with
+validation, and exfiltration-shape output scanning. Agentic surfaces are
+covered too: MCP tool-poisoning and rug-pull detection, tool-result
+quarantine, and multi-turn session risk. Not a firewall: it is the
+microsecond first layer of a defense-in-depth stack, with
 [measured precision/recall on a public dataset](./benchmarks/PUBLIC_RESULTS.md)
 and explicit [non-goals](#non-goals).
 
@@ -239,6 +241,103 @@ which bounds what reaches your prompt.
 const guard = createGuard({ maxAnalyzedLength: 50_000 });
 ```
 
+## Agentic Surfaces (v2.1)
+
+Indirect injection through tools and retrieved content is the dominant
+real-world vector, and it never touches your user-input field. Three
+text-level defenses for it:
+
+### Tool-definition scanning (MCP tool poisoning)
+
+A tool *description* is read by the model as instruction, so a malicious
+or compromised MCP server can inject without any user involvement
+([Invariant Labs, 2025](https://github.com/invariantlabs-ai/mcp-injection-experiments)).
+`scanToolDefinition` checks the name, description, and every string
+reachable in `inputSchema`:
+
+```ts
+import { scanToolDefinition } from "llm-prompt-guard";
+
+const result = scanToolDefinition(tool);
+if (!result.safe) {
+  console.error(`Refusing ${tool.name}:`, result.findings);
+  // → [{ type: "concealment-instruction", location: "description", ... },
+  //    { type: "credential-access",       location: "description", ... }]
+}
+```
+
+Finding types: `concealment-instruction` ("do not tell the user",
+`<IMPORTANT>` blocks), `credential-access` (`~/.ssh/id_rsa`, `.env`,
+`.aws/credentials`), `tool-shadowing` (redirecting other tools),
+`injection-pattern` (the built-in set), and `obfuscation` (hidden
+Unicode, homoglyphs, base64 text).
+
+These patterns run **only** against tool definitions, never user input —
+the same sentence means different things in each place. "Do not mention
+this to anyone" from a user is unremarkable; from a tool description it
+is instructing the model to hide behavior from the operator.
+
+### Rug-pull detection
+
+The same research documented servers that advertise a benign tool, wait
+for approval, then swap the description. Pin a fingerprint at approval
+time and compare later:
+
+```ts
+import { fingerprintTool } from "llm-prompt-guard";
+
+const pinned = await fingerprintTool(tool);      // at approval
+// ...later...
+const current = await fingerprintTool(tool);
+if (current.digest !== pinned.digest) requireReapproval();
+```
+
+Async because it uses Web Crypto SHA-256. A fast non-cryptographic hash
+would be the wrong primitive: the attacker controls the description, so
+a collidable digest lets them swap content while the fingerprint holds.
+Key order is canonicalized, so cosmetic reordering is not a false alarm.
+
+### Tool-result quarantine
+
+```ts
+import { wrapToolResult } from "llm-prompt-guard";
+
+const r = wrapToolResult(searchResults, { sourceName: "web_search" });
+messages.push({ role: "user", content: `${r.systemClause}\n\n${r.wrapped}` });
+```
+
+A preset over `sanitize(mode: "quarantine")` tuned for tool output:
+nonced delimiters **on by default** (tool results are attacker-reachable
+in a way user input fields often aren't) and a system clause naming the
+source. This is OWASP LLM01's "segregate external content".
+
+## Multi-Turn Sessions (v2.1)
+
+Crescendo-style attacks distribute intent across turns so that no single
+message crosses a blocking threshold. `createSession()` accumulates risk
+across a conversation:
+
+```ts
+import { createSession } from "llm-prompt-guard";
+
+const session = createSession();          // one per conversation
+
+for (const message of conversation) {
+  const r = session.record(message);
+  if (r.shouldReview) escalateToHuman(r.session);
+  // r.session -> { turns, cumulativeScore, peakScore, flaggedTurns, escalating }
+}
+```
+
+`shouldReview` is true when *either* the turn is individually
+high-severity *or* the session has accumulated past
+`escalationThreshold` (default 1.5) — three medium-severity turns that
+each score 0.5 and individually look fine will trip it. Counters and
+thresholds, not a model: explainable, microseconds, and the state is a
+handful of numbers you can serialize alongside your own session storage.
+Use `createGuard({ extraPatterns }).createSession()` for a session that
+honors custom patterns.
+
 ## Output Validation (Semantic)
 
 `validateOutput` checks LLM responses for semantic signs an injection
@@ -415,7 +514,7 @@ semantic paraphrase, novel phrasings, and multi-turn escalation.
 ## Standards alignment
 
 - **[OWASP LLM Top 10 2025](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)** — LLM01 Prompt Injection: this library implements the input-filtering, output-filtering, and segregate-external-content (quarantine) mitigations. The other LLM01 mitigations (privilege control, human approval, adversarial testing) belong to your application layer.
-- **[OWASP Agentic Top 10 2026](https://genaisecurityproject.com/llm-top-10-for-agentic-ai/)** — relevant to ASI01 as an input/output filtering layer; agent-specific mitigations (tool restrictions, memory isolation) are out of scope today.
+- **[OWASP Agentic Top 10 2026](https://genaisecurityproject.com/llm-top-10-for-agentic-ai/)** — ASI01 (input/output filtering, tool-result segregation) and tool-poisoning detection via `scanToolDefinition` / `fingerprintTool`. Runtime mitigations (execution sandboxing, capability scoping, memory isolation) remain out of scope — see [Non-goals](#non-goals).
 - **[HiddenLayer Policy Puppetry (2025)](https://hiddenlayer.com/research/novel-universal-bypass-for-all-major-llms/)** — universal bypass mixing JSON role, ChatML, and Alpaca. Caught by format-injection + the multi-format benchmark class.
 - **[Willison — Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)** — private data + untrusted content + external communication. This library targets the second leg.
 - **[Meta — Agents Rule of Two](https://meta.com/blog/agents-rule-of-two/)** — agent-design principle that complements single-turn input filtering.
@@ -446,10 +545,22 @@ guard.detect(input);                            // → boolean
 guard.count(input);                             // → number
 guard.assess(input);                            // → AssessResult      (v2.1)
 guard.normalizeInput(input);                    // → NormalizeResult   (v2.1)
+guard.createSession(config?);                   // → SessionGuard      (v2.1)
 guard.getPatterns();                            // → ReadonlyArray<InjectionPattern>
 guard.generateCanary();                         // → string
 guard.validateOutput(output, options?);         // → OutputValidationResult
 guard.scanOutput(text);                         // → OutputScanResult
+```
+
+Agentic and session helpers are standalone exports (no guard needed):
+
+```ts
+import {
+  scanToolDefinition,   // (tool)            → ToolScanResult
+  fingerprintTool,      // (tool)            → Promise<ToolFingerprint>
+  wrapToolResult,       // (result, options) → { wrapped, systemClause, patternsDetected }
+  createSession,        // (config?)         → SessionGuard
+} from "llm-prompt-guard";
 ```
 
 See [`src/types.ts`](./src/types.ts) for the full type surface.
@@ -544,7 +655,8 @@ metadata, so attackers cannot use your logs to refine bypasses.
 - **Regex, not semantic.** Novel paraphrases ("kindly overlook the above") will not match — stack a model-based filter. The [public benchmark](./benchmarks/PUBLIC_RESULTS.md) quantifies this honestly. `assess()` narrows the gap only when the attacker obfuscates; a plainly-worded paraphrase still scores 0.
 - **English-first.** Multilingual patterns for Spanish, French, German, and Portuguese are opt-in; they do not cover arbitrary translation.
 - **Encoding passes are heuristic.** Base64 decode only accepts ASCII-printable results; character-split collapse only handles `.`, `-`, and `_` (space-separated splitting would flood false positives); leet substitutions outside the 8-char `LEET_MAP` table are not caught.
-- **Single-turn.** Multi-turn attacks (Crescendo, Skeleton Key) require stateful tracking in your application layer.
+- **Multi-turn is heuristic.** `createSession()` accumulates per-turn risk to catch gradual escalation, but a Crescendo whose every turn is *plainly worded* still scores 0 per turn and never accumulates — the per-turn scorer is still regex-based.
+- **Agentic scanning is text-only.** `scanToolDefinition` reads what a server advertises; it cannot verify what the tool actually *does*. Sandboxing, capability scoping, and human approval for consequential calls remain your agent runtime's job.
 - **Defense in depth.** See [Willison's Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) and [Meta's Agents Rule of Two](https://meta.com/blog/agents-rule-of-two/).
 
 ## Non-goals
@@ -563,8 +675,10 @@ Things this library does not attempt, so you can plan the layers above it:
   in your agent framework, not in a text filter.
 - **Multimodal injection** — payloads carried in images, audio, or video
   require vision-capable screening; this library only sees text.
-- **Multi-turn state** — cross-turn escalation tracking must live where
-  your session state lives.
+- **Runtime enforcement** — sandboxing, capability scoping, and human
+  approval gates for consequential tool calls belong to your agent
+  framework. `scanToolDefinition` tells you a tool *advertises*
+  something malicious; it cannot constrain what the tool does when run.
 
 ## License
 
