@@ -211,13 +211,20 @@ describe("PII detection", () => {
     test("linear-time on pathological input (ReDoS regression)", () => {
       // The pre-fix email pattern `[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}` backtracked
       // catastrophically on long runs of letters+digits without a valid TLD —
-      // ~18 seconds on 500KB inputs. The length-gated replacement keeps this
-      // under ~150ms on the same input.
+      // ~18 seconds on 500KB inputs. The length-gated replacement runs this
+      // in ~120ms on a developer machine.
+      //
+      // The ceiling is 3s, not a tight bound on that 120ms: shared CI
+      // runners are routinely 5x slower under load (a 500ms ceiling
+      // flaked at 598ms), and this test exists to catch a return to
+      // catastrophic backtracking — a regression measured in seconds —
+      // not to benchmark the runner. 3s keeps ~6x margin below the
+      // pre-fix behavior while surviving a slow runner.
       const pathological = "a".repeat(500000) + "@" + "b".repeat(500000) + ".1";
       const t0 = Date.now();
       validator.validate(pathological);
       const elapsed = Date.now() - t0;
-      expect(elapsed).toBeLessThan(500);
+      expect(elapsed).toBeLessThan(3000);
     });
 
     test("still matches real-world email shapes", () => {
