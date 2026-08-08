@@ -213,11 +213,17 @@ describe("PII detection", () => {
       // catastrophically on long runs of letters+digits without a valid TLD —
       // ~18 seconds on 500KB inputs. The length-gated replacement keeps this
       // under ~150ms on the same input.
+      //
+      // The budget is deliberately ~13x the healthy value, not ~3x: this is a
+      // wall-clock assertion on a shared CI runner, and a 500ms gate tripped on
+      // ordinary contention (505ms, 615ms) while the code was correct. At 2s it
+      // still catches the ~18s regression it exists for, with ~9x of margin.
+      const REDOS_BUDGET_MS = 2000;
       const pathological = "a".repeat(500000) + "@" + "b".repeat(500000) + ".1";
       const t0 = Date.now();
       validator.validate(pathological);
       const elapsed = Date.now() - t0;
-      expect(elapsed).toBeLessThan(500);
+      expect(elapsed).toBeLessThan(REDOS_BUDGET_MS);
     });
 
     test("still matches real-world email shapes", () => {
