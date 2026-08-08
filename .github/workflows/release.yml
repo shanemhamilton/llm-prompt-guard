@@ -39,6 +39,11 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # Manual fallback: when a tag-triggered run fails for an environmental
+  # reason, the tag ref still carries the broken workflow, so re-running
+  # it changes nothing. Dispatching from a fixed main publishes whatever
+  # version is in package.json.
+  workflow_dispatch:
 
 # Default to no permissions at the workflow level; grant the minimum per job.
 permissions: {}
@@ -62,10 +67,17 @@ jobs:
           cache: 'npm'
 
       # Trusted Publishers OIDC support requires npm >= 11.5.1. Ubuntu
-      # runners currently ship npm 10.x by default, so we upgrade before
-      # publishing. Harmless when NPM_TOKEN is used instead.
+      # runners ship npm 10.x by default, so we upgrade before publishing.
+      # Harmless when NPM_TOKEN is used instead.
+      #
+      # Pinned to the 11.x line rather than `@latest`: npm 12 requires
+      # Node ^22.22.2 || ^24.15.0 || >=26, so `@latest` started failing
+      # this job with EBADENGINE on the Node 20 runner the moment npm 12
+      # shipped (it broke the v2.1.0 publish). npm 11 satisfies the
+      # >= 11.5.1 OIDC requirement and supports Node ^20.17.0, so this
+      # pin cannot drift out from under the pinned runtime again.
       - name: Upgrade npm for Trusted Publishers OIDC
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: npm ci
