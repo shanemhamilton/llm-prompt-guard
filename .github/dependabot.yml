@@ -5,6 +5,13 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # TypeScript 7 is the Go-native port and no longer exposes the JavaScript
+      # compiler API that ts-jest loads, so every test suite fails to run.
+      # ts-jest 29 also declares peer `typescript ">=4.3 <7"`. Drop this ignore
+      # once ts-jest ships TS 7 support, then bump both together.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
