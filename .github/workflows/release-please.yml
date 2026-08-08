@@ -17,5 +17,14 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v5
         with:
+          # GitHub does not trigger workflows from events created with the
+          # default GITHUB_TOKEN (anti-recursion). With that token, the release
+          # PR never runs the checks main's protection requires, and the release
+          # tag never fires release.yml — so nothing publishes to npm.
+          #
+          # RELEASE_PLEASE_TOKEN is a fine-grained PAT (contents: write,
+          # pull-requests: write on this repo only). Falls back to GITHUB_TOKEN
+          # when unset, which still opens the PR but leaves both gaps above.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
