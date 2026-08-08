@@ -160,6 +160,85 @@ flowchart TD
 7. **Detect** — run all active patterns against the detection string.
 8. **Apply mode** — block, neutralize, excise, quarantine, or tag.
 
+## Risk Scoring and Obfuscation Signals
+
+`detect()` is a boolean and `count()` an integer, but neither tells you
+*why* an input looked suspicious. `assess()` returns a weighted risk
+score in `[0, 1]` that combines pattern matches with **obfuscation
+signals** — evidence gathered while normalizing, independent of whether
+any keyword matched. This closes the gap where a paraphrased injection
+smuggled in invisible characters decodes cleanly but matches no pattern.
+
+```ts
+const guard = createGuard();
+
+const r = guard.assess("Lovely weather today!\u{E0070}\u{E006C}..."); // tag-smuggled payload
+// r.score            -> 0.9
+// r.reasons          -> ["Plane-14 tag-block payload"]
+// r.signals          -> { tagBlockPayload: true, suspiciousHomoglyphs: false, ... }
+// r.hasHighSeverity  -> true
+
+if (r.score >= 0.9) reject();
+else if (r.score >= 0.3) sendToHumanReview();
+```
+
+Score contributors (additive, capped at 1): high-severity pattern `1.0`,
+medium `0.5`, tag-block payload `0.9`, suspicious homoglyphs `0.3`,
+interleaved invisibles `0.3`, base64-hidden text `0.2`, analysis
+truncation `0.1`. The scoring is deterministic and fully explained by
+`reasons` — it is not a probability. As of v2.1, a **Plane-14 tag-block
+payload is also a first-class detection** in `detect()` / `count()` /
+`sanitize()` (there is no benign reason for user input to carry text in
+invisible tag characters). The fuzzier signals — homoglyphs, invisibles,
+base64 — contribute to `assess()` only; they have benign explanations
+and never block on their own.
+
+The signals are scoped to avoid false positives: `suspiciousHomoglyphs`
+fires only when Latin text is salted with Cyrillic/Greek **look-alikes**
+(genuine Russian or Greek text does not trip it), and
+`interleavedInvisibles` counts only zero-width characters *between ASCII
+letters* (emoji variation selectors and Persian ZWNJ do not count).
+
+> Like `patternsDetected`, keep `score`, `reasons`, and `signals`
+> server-side — exposing them gives an attacker an oracle.
+
+## Normalization as a Standalone Preprocessor
+
+The normalization pipeline is the library's strongest layer, and
+character-level smuggling (homoglyphs, zero-width, tag-block, base64)
+defeats ML-based guards too — so you can run it *in front of* any
+downstream classifier or LLM judge, whether or not you use the regex
+patterns at all.
+
+```ts
+const { text, decoded, signals } = guard.normalizeInput(userInput);
+
+// De-smuggled, output-safe text + any recovered hidden payloads.
+// Feed the classifier what the LLM would actually see:
+const forClassifier = [text, ...decoded].join(" ");
+const verdict = await myMlGuard(forClassifier);
+```
+
+`normalizeInput()` returns output-safe text (invisibles stripped, NFKD,
+homoglyphs mapped — no lossy leetspeak/URL/reversal transforms that
+would corrupt legitimate content), the `decoded[]` payloads recovered
+from tag-block and base64 smuggling, and the same `signals` as
+`assess()`. Also exported as the one-shot `normalizeInput(input)`.
+
+## Analysis Cost Cap
+
+Detection builds a normalized string several times the input length and
+scans every pattern over it, so unbounded input is a self-inflicted DoS
+vector. `maxAnalyzedLength` (default `100_000` characters) caps the work:
+input beyond the cap is not analyzed and the truncation surfaces as
+`signals.truncatedForAnalysis`. On a 5 MB input this bounds a `detect()`
+call to ~7 ms instead of ~170 ms. Pair it with `FieldConfig.maxLength`,
+which bounds what reaches your prompt.
+
+```ts
+const guard = createGuard({ maxAnalyzedLength: 50_000 });
+```
+
 ## Output Validation (Semantic)
 
 `validateOutput` checks LLM responses for semantic signs an injection
@@ -357,6 +436,7 @@ const guard = createGuard({
   extraPatterns: [],
   disableCategories: [],
   normalizeOutput: true,     // default in v2.0
+  maxAnalyzedLength: 100_000, // default in v2.1
   allowedOrigins: [],
   outputValidation: undefined,
 });
@@ -364,6 +444,8 @@ const guard = createGuard({
 guard.sanitize(input, field, userId?);          // → SanitizationResult
 guard.detect(input);                            // → boolean
 guard.count(input);                             // → number
+guard.assess(input);                            // → AssessResult      (v2.1)
+guard.normalizeInput(input);                    // → NormalizeResult   (v2.1)
 guard.getPatterns();                            // → ReadonlyArray<InjectionPattern>
 guard.generateCanary();                         // → string
 guard.validateOutput(output, options?);         // → OutputValidationResult
@@ -443,6 +525,13 @@ const guard = createGuard({
 });
 ```
 
+> **ReDoS contract:** custom patterns are not sandboxed or validated.
+> They run on every call against attacker-controlled text, so keep them
+> linear-time — avoid nested quantifiers (`(a+)+`) and overlapping
+> alternations sharing a suffix. A catastrophic custom regex is a
+> self-inflicted denial of service; `maxAnalyzedLength` bounds the input
+> it sees but cannot make an exponential pattern safe.
+
 ## Logging
 
 Provide any logger that implements `warn()` and `info()` — `console`,
@@ -452,7 +541,7 @@ metadata, so attackers cannot use your logs to refine bypasses.
 
 ## Limitations
 
-- **Regex, not semantic.** Novel paraphrases ("kindly overlook the above") will not match — stack a model-based filter. The [public benchmark](./benchmarks/PUBLIC_RESULTS.md) quantifies this honestly.
+- **Regex, not semantic.** Novel paraphrases ("kindly overlook the above") will not match — stack a model-based filter. The [public benchmark](./benchmarks/PUBLIC_RESULTS.md) quantifies this honestly. `assess()` narrows the gap only when the attacker obfuscates; a plainly-worded paraphrase still scores 0.
 - **English-first.** Multilingual patterns for Spanish, French, German, and Portuguese are opt-in; they do not cover arbitrary translation.
 - **Encoding passes are heuristic.** Base64 decode only accepts ASCII-printable results; character-split collapse only handles `.`, `-`, and `_` (space-separated splitting would flood false positives); leet substitutions outside the 8-char `LEET_MAP` table are not caught.
 - **Single-turn.** Multi-turn attacks (Crescendo, Skeleton Key) require stateful tracking in your application layer.
@@ -464,7 +553,8 @@ Things this library does not attempt, so you can plan the layers above it:
 
 - **Semantic/paraphrase detection** — requires a trained classifier
   (e.g. [Llama Prompt Guard 2](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M))
-  or an LLM judge. This library is the deterministic triage in front of them.
+  or an LLM judge. This library is the deterministic triage in front of
+  them — use `normalizeInput()` to hand them de-smuggled text.
 - **Model-level defenses** — instruction hierarchy, StruQ/SecAlign-style
   fine-tuning, and constitutional training happen inside the model; no
   middleware can supply them.
