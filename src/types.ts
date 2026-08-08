@@ -307,7 +307,7 @@ export interface NormalizationSignals {
   tagBlockPayload: boolean;
   /**
    * Count of invisible characters interleaved *between ASCII letters*
-   * (the evasion shape, e.g. `i​g​n​o​r​e`).
+   * (the evasion shape, e.g. `i\u200Bg\u200Bn\u200Bo\u200Br\u200Be`).
    * Scoped to letter-adjacent positions so emoji variation selectors,
    * Persian ZWNJ, and RTL marks in genuine non-Latin text do not count.
    */
