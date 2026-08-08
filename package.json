@@ -1,7 +1,7 @@
 {
   "name": "llm-prompt-guard",
   "version": "2.0.2",
-  "description": "Regex-based prompt injection firewall for TypeScript. Zero dependencies, sub-millisecond, with neutralization mode.",
+  "description": "Sub-millisecond Layer-1 prompt-injection defense for TypeScript: detection triage, encoding-bypass normalization, quarantine/spotlighting, canary and output scanning. Zero dependencies.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -30,6 +30,7 @@
     "lint": "eslint src/ --ext .ts",
     "typecheck": "tsc --noEmit",
     "bench": "ts-node benchmarks/run.ts",
+    "bench:public": "ts-node benchmarks/public.ts",
     "prepare": "tsup",
     "prepublishOnly": "npm run build"
   },
@@ -44,7 +45,7 @@
     "gemini",
     "owasp",
     "prompt-guard",
-    "firewall",
+    "guardrails",
     "input-validation",
     "spotlighting",
     "datamarking",

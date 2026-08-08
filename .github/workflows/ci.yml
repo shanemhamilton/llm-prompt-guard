@@ -43,5 +43,8 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Benchmarks (curated + public dataset, regression-gated)
+        run: npm run bench && npm run bench:public
+
       - name: Build
         run: npm run build
