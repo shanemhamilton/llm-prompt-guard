@@ -27,7 +27,7 @@
     "build": "tsup",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "lint": "eslint src/ --ext .ts",
+    "lint": "eslint src benchmarks",
     "typecheck": "tsc --noEmit",
     "bench": "ts-node benchmarks/run.ts",
     "bench:public": "ts-node benchmarks/public.ts",
@@ -73,11 +73,14 @@
     "esbuild": "^0.28.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/jest": "^30.0.0",
+    "eslint": "^10.8.1",
     "jest": "^30.4.2",
     "ts-jest": "^29.2.5",
     "ts-node": "^10.9.0",
     "tsup": "^8.3.6",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.66.0"
   }
 }

@@ -376,7 +376,8 @@ export const INVISIBLE_CHARS_SUPPLEMENTARY =
 
 /**
  * An invisible character sandwiched between ASCII letters — the
- * keyword-interleave evasion shape (`i​g​n​o​r​e`). Deliberately scoped to
+ * keyword-interleave evasion shape
+ * (`i\u200Bg\u200Bn\u200Bo\u200Br\u200Be`). Deliberately scoped to
  * letter-adjacent positions so legitimate uses of the same code points
  * (emoji variation selectors, Persian ZWNJ between Arabic letters, RTL
  * marks, soft hyphens at line-break points) do not count as evidence.

@@ -1,5 +1,4 @@
 import { generateCanary, createOutputValidator, createGuard } from "./index";
-import type { OutputValidatorConfig } from "./types";
 
 // ── generateCanary() ─────────────────────────────────────────────────
 
