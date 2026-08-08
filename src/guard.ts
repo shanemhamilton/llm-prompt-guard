@@ -1,6 +1,5 @@
 import type {
   AssessResult,
-  ExfilFinding,
   FieldConfig,
   GuardConfig,
   InjectionPattern,
@@ -28,7 +27,7 @@ import {
   NEUTRALIZATION_MAP,
   ensureGlobalFlag,
 } from "./patterns";
-import { createOutputValidator, generateCanary } from "./output";
+import { createOutputValidator, generateCanary, scanOutputImpl } from "./output";
 
 /** No-op logger used when the caller does not provide one. */
 const SILENT_LOGGER: Logger = {
@@ -65,136 +64,6 @@ const INTERLEAVE_SCORE_THRESHOLD = 3;
 const HOMOGLYPH_SIGNAL_THRESHOLD = 2;
 /** Minimum decoded-base64 length (with a space) to count as hidden text. */
 const MIN_DECODED_PHRASE_LENGTH = 12;
-
-// ── Output scanning (exfiltration-shape detection) ───────────────────
-
-/**
- * Syntactic exfil-shape patterns. Unlike output *validation* (which
- * looks at semantics — canary leaks, system prompt leakage, PII,
- * behavioral anomalies), these patterns match on shape alone.
- *
- * - `base64-blob` — 120+ char run of base64 alphabet. Raised length
- *   gate (over the detection pipeline's 16-char threshold) keeps the
- *   false-positive rate low for genuine code/data payloads.
- * - `markdown-image-with-query` — `![alt](https://foo.com/bar?qs)` —
- *   a classic LLM-exfil vector where the attacker's URL fires a GET
- *   request carrying stolen data the moment the rendered output hits
- *   a browser.
- * - `outbound-url` — any `http(s)://...` URL, minus hosts on the
- *   caller's allowlist.
- * - `data-url` — `data:...;base64,` embedded blobs.
- * - `hex-blob` — 64+ hex characters (likely hash or long token).
- */
-const EXFIL_PATTERNS: Array<{
-  type: ExfilFinding["type"];
-  pattern: RegExp;
-}> = [
-  { type: "base64-blob", pattern: /[A-Za-z0-9+/]{120,}={0,2}/g },
-  {
-    type: "markdown-image-with-query",
-    pattern: /!\[.*?\]\(https?:\/\/[^)]+\?[^)]+\)/g,
-  },
-  { type: "data-url", pattern: /data:[^;,]+;base64,/gi },
-  { type: "hex-blob", pattern: /[0-9a-fA-F]{64,}/g },
-  // Outbound URL last so more-specific patterns (markdown image, data URL)
-  // get first pick on their substrings.
-  { type: "outbound-url", pattern: /https?:\/\/[^\s)"'<>]+/g },
-];
-
-/**
- * Case-insensitive hostname match against an allowlist.
- *
- * - Bare entry `"example.com"` matches the apex and every subdomain
- *   (`example.com`, `api.example.com`, `www.example.com`), but NOT
- *   `notexample.com` — the dot guard prevents suffix-only matches.
- * - Cookie-style entry `".example.com"` matches subdomains only
- *   (`api.example.com`, `www.example.com`), NOT the apex
- *   `example.com`. Use this when you want the apex to remain flagged.
- */
-function hostMatchesAllowlist(host: string, allowlist: string[]): boolean {
-  const lowerHost = host.toLowerCase();
-  for (const entry of allowlist) {
-    const lowerEntryRaw = entry.toLowerCase();
-    const subdomainOnly = lowerEntryRaw.startsWith(".");
-    const lowerEntry = subdomainOnly ? lowerEntryRaw.slice(1) : lowerEntryRaw;
-    if (!subdomainOnly && lowerHost === lowerEntry) return true;
-    if (lowerHost.endsWith("." + lowerEntry)) return true;
-  }
-  return false;
-}
-
-/**
- * Extract the hostname from an outbound URL match. Returns null if the
- * URL is unparseable — the caller should then treat it as a finding
- * (the conservative choice for a defense-in-depth tool).
- */
-function extractHost(url: string): string | null {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Scan LLM output for syntactic exfiltration-shape patterns.
- *
- * Complements `validateOutput` (semantic signals) with a syntactic
- * sweep: if the response text *looks* like a base64 blob, a markdown
- * image with querystring, an outbound URL, a data URL, or a long hex
- * run, a finding is surfaced. Callers decide whether to block, strip,
- * or log — `scanOutput` reports; it does not mutate.
- *
- * @param text - The LLM's raw response text.
- * @param config - Optional config. Only `allowedOrigins` is honored here —
- *   hosts on the allowlist bypass the `outbound-url` finding type.
- */
-function scanOutputImpl(
-  text: string,
-  allowedOrigins: string[]
-): OutputScanResult {
-  const findings: ExfilFinding[] = [];
-  if (!text) return { safe: true, findings };
-
-  for (const { type, pattern } of EXFIL_PATTERNS) {
-    // Fresh regex per scan — we mutate lastIndex and callers may retain
-    // references, so we always clone. Non-global patterns get `g` added.
-    const flags = pattern.global ? pattern.flags : pattern.flags + "g";
-    const global = new RegExp(pattern.source, flags);
-    let match: RegExpExecArray | null;
-    while ((match = global.exec(text)) !== null) {
-      const matched = match[0];
-
-      // Skip outbound URLs on the caller's allowlist.
-      if (type === "outbound-url") {
-        const host = extractHost(matched);
-        if (host !== null && hostMatchesAllowlist(host, allowedOrigins)) {
-          if (matched.length === 0) global.lastIndex++;
-          continue;
-        }
-      }
-
-      findings.push({
-        type,
-        preview: matched.slice(0, 60),
-        offset: match.index,
-      });
-
-      if (matched.length === 0) global.lastIndex++;
-    }
-  }
-
-  return { safe: findings.length === 0, findings };
-}
-
-/**
- * Scan LLM output for syntactic exfiltration-shape patterns using
- * default configuration (no allowlist). For per-host allowlisting, use
- * `createGuard({ allowedOrigins }).scanOutput()`.
- */
-export function scanOutput(text: string): OutputScanResult {
-  return scanOutputImpl(text, []);
-}
 
 /**
  * Create a prompt guard instance with the given configuration.

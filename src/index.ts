@@ -6,7 +6,6 @@ export {
   assess,
   normalizeInput,
   createSession,
-  scanOutput,
 } from "./guard";
 export {
   scanToolDefinition,
@@ -14,7 +13,7 @@ export {
   wrapToolResult,
 } from "./agentic";
 export { BUILTIN_PATTERNS, NEUTRALIZATION_MAP, LEET_MAP, ensureGlobalFlag } from "./patterns";
-export { generateCanary, createOutputValidator } from "./output";
+export { generateCanary, createOutputValidator, scanOutput } from "./output";
 export type {
   SanitizationResult,
   SanitizationMode,

