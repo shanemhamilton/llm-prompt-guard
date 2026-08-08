@@ -11,6 +11,16 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.1.1](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.0...v2.1.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* **ci:** move release-please to googleapis/release-please-action@v5 ([#24](https://github.com/shanemhamilton/llm-prompt-guard/issues/24)) ([4aaf3b0](https://github.com/shanemhamilton/llm-prompt-guard/commit/4aaf3b0722936e868802b4c3b04d3a6d4805c07e))
+* **ci:** pin ossf/scorecard-action to v2.4.4 ([#23](https://github.com/shanemhamilton/llm-prompt-guard/issues/23)) ([7c0e8c2](https://github.com/shanemhamilton/llm-prompt-guard/commit/7c0e8c2d04c85d1563958a92c069f8f495c02a87))
+* **release:** match release-please tags to v* so releases publish ([#25](https://github.com/shanemhamilton/llm-prompt-guard/issues/25)) ([bc07dbb](https://github.com/shanemhamilton/llm-prompt-guard/commit/bc07dbb6143d5383c2e7764d83f8a749bef70954))
+* **release:** pin npm to 11.x so publish works on the Node 20 runner ([e124a0a](https://github.com/shanemhamilton/llm-prompt-guard/commit/e124a0acff7d8ab47b9b0db4f4d44284817aac71))
+
 ## [2.1.0] - 2026-08-08
 
 Modernization release. The theme is that **obfuscation is now treated as
