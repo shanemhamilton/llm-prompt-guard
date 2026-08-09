@@ -20,12 +20,12 @@ import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
   CYRILLIC_GREEK,
+  HOMOGLYPH_MAP,
   INTERLEAVED_INVISIBLE,
-  INVISIBLE_CHARS,
-  INVISIBLE_CHARS_SUPPLEMENTARY,
   LEET_MAP,
   NEUTRALIZATION_MAP,
   ensureGlobalFlag,
+  normalizeForOutput,
 } from "./patterns";
 import { createOutputValidator, generateCanary, scanOutputImpl } from "./output";
 
@@ -408,63 +408,7 @@ function rot13(input: string): string {
   });
 }
 
-/**
- * Cyrillic / Greek homoglyph → Latin mapping used by both the output-safe
- * normalization pass and the detection-time normalization pass. The two
- * paths must agree: detection sees the same Latin form the caller will
- * receive on the clean path, and vice versa.
- */
-const HOMOGLYPH_MAP: Record<string, string> = {
-  "\u0430": "a", // Cyrillic а
-  "\u0435": "e", // Cyrillic е
-  "\u043E": "o", // Cyrillic о
-  "\u0440": "p", // Cyrillic р
-  "\u0441": "c", // Cyrillic с
-  "\u0443": "y", // Cyrillic у
-  "\u0445": "x", // Cyrillic х
-  "\u0456": "i", // Cyrillic і (Ukrainian)
-  "\u0458": "j", // Cyrillic ј
-  "\u04BB": "h", // Cyrillic һ
-  "\u0410": "A", // Cyrillic А
-  "\u0412": "B", // Cyrillic В
-  "\u0415": "E", // Cyrillic Е
-  "\u041A": "K", // Cyrillic К
-  "\u041C": "M", // Cyrillic М
-  "\u041D": "H", // Cyrillic Н
-  "\u041E": "O", // Cyrillic О
-  "\u0420": "P", // Cyrillic Р
-  "\u0421": "C", // Cyrillic С
-  "\u0422": "T", // Cyrillic Т
-  "\u0425": "X", // Cyrillic Х
-  "\u03BF": "o", // Greek omicron ο
-  "\u03B1": "a", // Greek alpha α (when combined with NFKD)
-};
 
-const HOMOGLYPH_RANGE = /[\u0410-\u04BB\u03B1\u03BF]/g;
-const DIACRITICAL_MARKS = /[\u0300-\u036F]/g;
-
-/**
- * Non-lossy output normalization — safe for returning to callers.
- *
- * Only strips invisible characters (BMP + Plane 14 tag block + VS
- * Supplement) and maps homoglyphs / NFKD-decomposed forms back to
- * their ASCII / Latin equivalents. Does NOT apply leetspeak, URL
- * decoding, separator collapse, or reversal — those are aggressive,
- * lossy transforms that are correct for detection but would corrupt
- * legitimate content containing numbers, URLs, or dots.
- *
- * Used by `sanitize()`'s clean path when `normalizeOutput !== false`.
- */
-function normalizeForOutput(input: string): string {
-  // Strip BMP invisibles, then Plane 14 Tag block + Variation Selector Supplement.
-  let result = input.replace(INVISIBLE_CHARS, "").replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
-  // NFKD decomposition (fullwidth → ASCII, ﬁ → fi, accented base separate).
-  result = result.normalize("NFKD");
-  // Strip combining diacritical marks after NFKD.
-  result = result.replace(DIACRITICAL_MARKS, "");
-  // Map Cyrillic / Greek homoglyphs to Latin — same table as detection.
-  return result.replace(HOMOGLYPH_RANGE, (ch) => HOMOGLYPH_MAP[ch] ?? ch);
-}
 
 /**
  * Normalize input for detection — defeats encoding, obfuscation, and evasion attacks.
@@ -548,14 +492,10 @@ function normalizeForDetection(
   });
 
   // Steps 1b-4: Strip invisibles (BMP + Plane 14 + VS Supplement), NFKD,
-  // strip diacritics, map Cyrillic/Greek homoglyphs to Latin. This is the
-  // same conservative normalization used by `normalizeForOutput` on the
-  // clean path — detection and output must see the same Latin form.
-  //
-  // INVISIBLE_CHARS is a non-`u` regex covering BMP invisibles;
-  // INVISIBLE_CHARS_SUPPLEMENTARY is a `u`-flagged regex covering
-  // U+E0000–U+E007F (Tag block — steganographic ASCII smuggling) and
-  // U+E0100–U+E01EF (Variation Selector Supplement).
+  // strip diacritics, map Cyrillic/Greek homoglyphs to Latin — see
+  // `normalizeForOutput` in patterns.ts. Detection, the clean output
+  // path, and the canary check all call it, which is what keeps them
+  // seeing the same Latin form.
   let result = normalizeForOutput(input);
 
   // Step 5: URL-decode %XX sequences
@@ -694,6 +634,7 @@ function applyNonceToTag(tag: string, nonce: string): string {
   }
   return `${tag}_${nonce}`;
 }
+
 
 /**
  * Quarantine mode: wrap original text in configurable delimiters.

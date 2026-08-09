@@ -7,11 +7,7 @@ import type {
   OutputValidatorConfig,
   PiiConfig,
 } from "./types";
-import {
-  ensureGlobalFlag,
-  INVISIBLE_CHARS,
-  INVISIBLE_CHARS_SUPPLEMENTARY,
-} from "./patterns";
+import { ensureGlobalFlag, normalizeForOutput } from "./patterns";
 
 // ── Canary token generation ──────────────────────────────────────────
 
@@ -241,15 +237,23 @@ export function createOutputValidator(
         return { safe: true, flags: [] };
       }
 
-      // 1. Canary token detection. We strip invisibles (BMP + Plane 14 +
-      // VS Supplement) before the `.includes()` check so an attacker who
-      // induces the LLM to emit the canary with zero-width characters
-      // interleaved between letters still gets flagged. The canary itself
-      // is plain ASCII hex, so the strip cannot disturb legitimate hits.
+      // 1. Canary token detection. We run the full output-safe
+      // normalization before the `.includes()` check — invisibles (BMP +
+      // Plane 14 + VS Supplement), NFKD, diacritic strip, and homoglyph
+      // folding — so an attacker who induces the LLM to emit the canary
+      // with zero-width characters interleaved, fullwidth digits, or
+      // Cyrillic look-alikes still gets flagged.
+      //
+      // Stripping invisibles alone was not enough: a canary is
+      // `CANARY_` + hex, and Cyrillic а/е/с are confusable with the hex
+      // digits a/e/c, so a single substituted character defeated the
+      // exact-match check while the LLM still emitted a readable canary.
+      //
+      // This is the same transform `sanitize()` applies on the clean
+      // path, which is what keeps the two in agreement: the canary is
+      // plain ASCII, so normalization cannot disturb a legitimate hit.
       if (canaryTokens.length > 0) {
-        const stripped = output
-          .replace(INVISIBLE_CHARS, "")
-          .replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+        const stripped = normalizeForOutput(output);
         for (const canary of canaryTokens) {
           if (stripped.includes(canary)) {
             flags.push({
