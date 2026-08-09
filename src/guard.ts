@@ -933,12 +933,17 @@ function sanitizeForPrompt(
     }
 
     case "tag": {
-      // Tag mode: return original text unchanged with annotations.
-      // Generate tags against original (control-char-stripped) text for accurate positions.
-      const tags = generateTags(sanitized, patterns);
+      // Tag mode: return the text with injection annotations.
+      //
+      // Truncate and collapse whitespace FIRST, then locate patterns in
+      // the exact string being returned. Tagging `sanitized` beforehand
+      // produced `start`/`end` offsets into a pre-trim, pre-truncation
+      // string, so any leading whitespace or collapsed run shifted every
+      // subsequent tag — callers slicing by those offsets got the wrong
+      // span, or one past the end.
       const tagSanitized = truncateWithLog(sanitized, field, inputStr.length, log);
-      // Normalize whitespace.
       const tagTrimmed = tagSanitized.trim().replace(/\s+/g, " ");
+      const tags = generateTags(tagTrimmed, patterns);
       return {
         sanitized: tagTrimmed,
         wasModified: false,
