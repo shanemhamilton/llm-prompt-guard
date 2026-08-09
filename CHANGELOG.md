@@ -11,6 +11,17 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.1.3](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.2...v2.1.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **guard:** index tag offsets against the returned string ([d19ed6e](https://github.com/shanemhamilton/llm-prompt-guard/commit/d19ed6ed68a8381f5c8c0a3c25fd441b26d6a204))
+* **guard:** strip the quarantine closing delimiter case-insensitively ([f3ad5ad](https://github.com/shanemhamilton/llm-prompt-guard/commit/f3ad5ad8111733cfd352e5380acbcc33071ffbea))
+* **output:** fold homoglyphs before comparing canary tokens ([f392142](https://github.com/shanemhamilton/llm-prompt-guard/commit/f39214259a272f29d69e99b30836280842330970))
+* **patterns:** accept letter confusables in confidence values ([c781417](https://github.com/shanemhamilton/llm-prompt-guard/commit/c7814178df137850719804bb745680b9a4d4a90b))
+* **patterns:** make the DAN neutralizer case-insensitive ([584134a](https://github.com/shanemhamilton/llm-prompt-guard/commit/584134abe3083308cb7098bdc435034ea02ed754))
+
 ## [2.1.2](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.1...v2.1.2) (2026-08-08)
 
 
