@@ -635,6 +635,14 @@ function applyNonceToTag(tag: string, nonce: string): string {
   return `${tag}_${nonce}`;
 }
 
+/**
+ * Escape regex metacharacters so a literal string can be embedded in a
+ * `RegExp`. Delimiters are caller-configurable ({@link FieldConfig}), so
+ * a tag like `[[untrusted]]` must not be compiled as a character class.
+ */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /**
  * Quarantine mode: wrap original text in configurable delimiters.
@@ -666,7 +674,15 @@ function quarantineInput(
   // payload can't match the nonced closing tag, so this only removes
   // actual nonced occurrences (rare — attacker would need to guess the
   // nonce first).
-  const stripped = original.split(closeTag).join("");
+  //
+  // Matched case-insensitively: XML/HTML-ish tags are read
+  // case-insensitively by the models consuming this, so `</UNTRUSTED_INPUT>`
+  // breaks out of `</untrusted_input>` just as effectively. An exact-case
+  // strip let that variant through untouched.
+  const stripped = original.replace(
+    new RegExp(escapeRegExp(closeTag), "gi"),
+    ""
+  );
 
   // Truncate unwrapped text to maxLength before wrapping.
   const safe = truncateWithLog(stripped, field, original.length, log);
