@@ -187,7 +187,15 @@ export const BUILTIN_PATTERNS: InjectionPattern[] = [
 
   // ── Confidence / approval manipulation ────────────────────────────
   {
-    pattern: /confidence\s*[=:]\s*(100|99|9[5-9])/i,
+    // Digit slots accept their letter confusables: an LLM reads
+    // `confidence=1OO` and `confidence=l00` as 100, so requiring literal
+    // digits let a one-character substitution walk past this. `[1li]`
+    // covers 1/l/I/i and `[0o]` covers 0/O/o under the `i` flag.
+    //
+    // The trailing `\b` keeps it from firing on ordinary words that
+    // happen to start with those letters — without it, "confidence:
+    // loose" matches `l` + `oo` and reports a high-severity injection.
+    pattern: /confidence\s*[=:]\s*([1li][0o]{2}|9[5-9st])\b/i,
     severity: "high",
     category: "confidence-manipulation",
   },
