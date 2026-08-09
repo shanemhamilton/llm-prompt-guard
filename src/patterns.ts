@@ -356,7 +356,12 @@ export const NEUTRALIZATION_MAP: Array<[RegExp, string]> = [
   // ── Jailbreak keywords ──
   [/jailbreak/gi, "j_a_i_l_b_r_e_a_k"],
   [/bypass/gi, "b_y_p_a_s_s"],
-  [/\bDAN\b/g, "D_A_N"],
+  // Case-insensitive like every other entry here: "dan mode" and "Dan
+  // Mode" are the same jailbreak as "DAN mode", and the `DAN\s+mode`
+  // detection pattern already matches case-insensitively. The cost is
+  // that the name "Dan" gets mangled too — acceptable in a mode that
+  // already mangles "prompt" and "bypass" in ordinary prose.
+  [/\bDAN\b/gi, "D_A_N"],
 
   // ── Format injection tokens ──
   [/<\|/g, "< |"],

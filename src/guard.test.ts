@@ -854,6 +854,17 @@ describe("NEUTRALIZATION_MAP", () => {
       expect(pattern.flags).toContain("g");
     }
   });
+
+  // Regression: the DAN entry was the only case-sensitive one, so
+  // "dan mode" passed through neutralize untouched while "DAN mode"
+  // was mangled — and the DAN detection pattern matches either.
+  test("every neutralization is case-insensitive", () => {
+    for (const [pattern] of NEUTRALIZATION_MAP) {
+      // Symbolic tokens (<|, ###) have no case to be insensitive about.
+      if (!/[A-Za-z]/.test(pattern.source)) continue;
+      expect(pattern.flags).toContain("i");
+    }
+  });
 });
 
 // ── BUILTIN_PATTERNS structure ───────────────────────────────────────
