@@ -26,6 +26,7 @@ import {
   NEUTRALIZATION_MAP,
   ensureGlobalFlag,
   normalizeForOutput,
+  stripStatefulFlags,
 } from "./patterns";
 import { createOutputValidator, generateCanary, scanOutputImpl } from "./output";
 
@@ -323,7 +324,17 @@ export function createSession(config?: SessionConfig): SessionGuard {
 function buildPatternList(config: GuardConfig): InjectionPattern[] {
   const disabled = new Set(config.disableCategories ?? []);
   const base = BUILTIN_PATTERNS.filter((p) => !disabled.has(p.category));
-  return config.extraPatterns ? [...base, ...config.extraPatterns] : base;
+  if (!config.extraPatterns) return base;
+  // Normalize caller patterns once, here, rather than asking every
+  // `.test()` site to remember to reset `lastIndex` — see
+  // `stripStatefulFlags`. Detection reads these repeatedly, so a `/g`
+  // or `/y` pattern would otherwise misfire silently.
+  const extra = config.extraPatterns.map((p) =>
+    p.pattern.global || p.pattern.sticky
+      ? { ...p, pattern: stripStatefulFlags(p.pattern) }
+      : p
+  );
+  return [...base, ...extra];
 }
 
 /**

@@ -332,6 +332,28 @@ export function ensureGlobalFlag(regex: RegExp): RegExp {
 }
 
 /**
+ * Return a copy of `regex` with the stateful flags (`g`, `y`) removed.
+ *
+ * Both flags make a regex carry `lastIndex` across calls, and the
+ * detection paths call `.test()` on the same pattern object on every
+ * request. A global pattern therefore reports true, then false, then
+ * true for identical input; a sticky one anchors at `lastIndex` and
+ * never matches text that does not begin with it.
+ *
+ * Every built-in pattern is non-global already, so this only ever
+ * rewrites caller-supplied `extraPatterns`. Normalizing once, where
+ * patterns enter the guard, is what keeps the invariant true at every
+ * `.test()` site — including sites added later, which is how `assess()`
+ * acquired the bug after the original report. `excise()` and
+ * `generateTags()` re-add `g` via {@link ensureGlobalFlag}, which
+ * returns a fresh instance, so match-all behavior is unaffected.
+ */
+export function stripStatefulFlags(regex: RegExp): RegExp {
+  if (!regex.global && !regex.sticky) return regex;
+  return new RegExp(regex.source, regex.flags.replace(/[gy]/g, ""));
+}
+
+/**
  * Keyword neutralization map used in "neutralize" mode.
  *
  * @deprecated Modern LLMs read through underscore mangling trivially.
