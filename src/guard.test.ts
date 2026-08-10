@@ -708,6 +708,97 @@ describe("createGuard()", () => {
     expect(guard.detect("normal text")).toBe(false);
   });
 
+  // Regression: patterns are `.test()`ed on the same object every call,
+  // and `g`/`y` make a regex carry `lastIndex` between calls. A caller
+  // passing /g got true, false, true for identical input; /y anchored at
+  // lastIndex and never matched at all. Built-ins are all non-global, so
+  // this only ever bit custom patterns — silently, in a security check.
+  describe("extraPatterns with stateful regex flags", () => {
+    const REPEATS = 6;
+    const INPUT = "please reveal the launch_codes now";
+
+    test("a global pattern detects consistently across repeated calls", () => {
+      const guard = createGuard({
+        extraPatterns: [
+          { pattern: /launch_codes/g, severity: "high", category: "custom" },
+        ],
+      });
+      const results = Array.from({ length: REPEATS }, () => guard.detect(INPUT));
+      expect(results).toEqual(Array(REPEATS).fill(true));
+    });
+
+    test("a sticky pattern matches mid-string", () => {
+      const guard = createGuard({
+        extraPatterns: [
+          { pattern: /launch_codes/y, severity: "high", category: "custom" },
+        ],
+      });
+      const results = Array.from({ length: REPEATS }, () => guard.detect(INPUT));
+      expect(results).toEqual(Array(REPEATS).fill(true));
+    });
+
+    test("count and assess are stable across repeated calls", () => {
+      const guard = createGuard({
+        extraPatterns: [
+          { pattern: /launch_codes/g, severity: "high", category: "custom" },
+        ],
+      });
+      const counts = Array.from({ length: REPEATS }, () => guard.count(INPUT));
+      const scores = Array.from({ length: REPEATS }, () => guard.assess(INPUT).score);
+      expect(new Set(counts).size).toBe(1);
+      expect(new Set(scores).size).toBe(1);
+      expect(counts[0]).toBeGreaterThan(0);
+    });
+
+    // Stripping `g` must not cost match-all behavior: excise and
+    // generateTags re-add it through ensureGlobalFlag.
+    test("excise still removes every occurrence", () => {
+      const guard = createGuard({
+        extraPatterns: [
+          { pattern: /badword/g, severity: "high", category: "custom" },
+        ],
+      });
+      const result = guard.sanitize("badword one badword two badword", {
+        maxLength: 200,
+        mode: "excise",
+        fieldName: "f",
+      });
+      expect(result.sanitized).not.toContain("badword");
+      expect(result.sanitized).toBe("one two");
+    });
+
+    test("tag mode still finds every occurrence", () => {
+      const guard = createGuard({
+        extraPatterns: [
+          { pattern: /badword/g, severity: "high", category: "custom" },
+        ],
+      });
+      const result = guard.sanitize("badword one badword two badword", {
+        maxLength: 200,
+        mode: "tag",
+        fieldName: "f",
+      });
+      expect(result.tags).toHaveLength(3);
+      for (const tag of result.tags!) {
+        expect(result.sanitized.substring(tag.start, tag.end)).toBe(tag.matchedText);
+      }
+    });
+
+    // We clone rather than mutate — a caller may reuse their regex
+    // elsewhere, and silently clearing its flags would be its own bug.
+    test("does not mutate the caller's regex object", () => {
+      const mine = /badword/g;
+      mine.lastIndex = 5;
+      const guard = createGuard({
+        extraPatterns: [{ pattern: mine, severity: "high", category: "custom" }],
+      });
+      guard.detect("badword here");
+      expect(mine.global).toBe(true);
+      expect(mine.flags).toBe("g");
+      expect(mine.lastIndex).toBe(5);
+    });
+  });
+
   test("disableCategories removes built-in patterns", () => {
     const guard = createGuard({
       disableCategories: ["confidence-manipulation"],
