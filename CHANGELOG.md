@@ -11,6 +11,13 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.1.4](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.3...v2.1.4) (2026-08-10)
+
+
+### Bug Fixes
+
+* **guard:** normalize stateful flags on caller-supplied patterns ([#32](https://github.com/shanemhamilton/llm-prompt-guard/issues/32)) ([f55b52f](https://github.com/shanemhamilton/llm-prompt-guard/commit/f55b52fed37f61c320ad5f67b049724abe346073))
+
 ## [2.1.3](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.2...v2.1.3) (2026-08-09)
 
 
