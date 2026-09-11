@@ -6,3 +6,5 @@ coverage/
 .env
 .claude/
 tmp/
+playground/dist/
+benchmarks/hf/out/
