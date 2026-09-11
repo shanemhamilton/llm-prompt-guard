@@ -17,6 +17,7 @@ and explicit [non-goals](#non-goals).
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm downloads](https://img.shields.io/npm/dm/llm-prompt-guard.svg)](https://www.npmjs.com/package/llm-prompt-guard)
 [![Bundle size](https://img.shields.io/bundlephobia/minzip/llm-prompt-guard)](https://bundlephobia.com/package/llm-prompt-guard)
+[![Hugging Face dataset](https://img.shields.io/badge/%F0%9F%A4%97%20dataset-llm--prompt--guard--tuning--corpus-yellow)](https://huggingface.co/datasets/shanemhamilton/llm-prompt-guard-tuning-corpus)
 
 ```
 npm install llm-prompt-guard
@@ -912,13 +913,28 @@ open playground/index.html
 It runs `normalizeInput`, `assess`, and `sanitize` side by side, plus an
 HTML mode backed by `normalizeHtml`. Nothing leaves the browser: the
 page loads the same IIFE bundle and analyzes input entirely client-side.
-A GitHub Pages workflow deploys it automatically once Pages is enabled
-in the repository settings.
+
+Try it live: **[shanemhamilton.github.io/llm-prompt-guard](https://shanemhamilton.github.io/llm-prompt-guard/)**.
+A GitHub Pages workflow redeploys it on every push to `main`. To run it
+locally instead:
+
+```
+npm run build:playground
+open playground/index.html
+```
 
 The tuning corpora behind the numbers in [Benchmarks](#benchmarks) are
-also staged as a Hugging Face dataset in
-[`benchmarks/hf/`](./benchmarks/hf/): 198 attack rows and 1,310 benign
-rows across seven domains, with a dataset card. Not yet published.
+published as a Hugging Face dataset:
+**[shanemhamilton/llm-prompt-guard-tuning-corpus](https://huggingface.co/datasets/shanemhamilton/llm-prompt-guard-tuning-corpus)**
+(198 attack rows and 1,310 benign rows across seven domains, with a
+dataset card). The dataset card and republish commands live in
+[`benchmarks/hf/`](./benchmarks/hf/).
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("shanemhamilton/llm-prompt-guard-tuning-corpus")
+```
 
 ## License
 

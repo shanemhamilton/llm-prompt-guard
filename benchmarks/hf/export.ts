@@ -2,8 +2,7 @@
  * Exports llm-prompt-guard's tuning corpora to Hugging Face
  * `datasets`-compatible JSONL, staged under `benchmarks/hf/out/` for
  * manual review. Writes files only — never touches the network, never
- * runs `huggingface-cli`. See `benchmarks/hf/README.md` for the
- * publishing command.
+ * runs `hf`. See `benchmarks/hf/README.md` for the publishing command.
  *
  * Usage: `npm run bench:export-hf` or `npx ts-node benchmarks/hf/export.ts`.
  */
