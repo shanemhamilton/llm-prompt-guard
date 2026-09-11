@@ -148,8 +148,12 @@ function normalizeWhitespace(raw: string): string {
 
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
+// Comment alternative matches only the literal "<!--" opener — the terminator
+// is then found with a linear indexOf scan (below) instead of a lazy
+// [\s\S]*? quantifier, which is quadratic on input with many "<!--" and no
+// "-->" (CodeQL js/polynomial-redos).
 const TOKEN_RE =
-  /<!--[\s\S]*?-->|<\/(?<closeName>[a-zA-Z][a-zA-Z0-9]*)\s*>|<(?<openName>[a-zA-Z][a-zA-Z0-9]*)(?<openAttrs>(?:\s+[^<>]*)?)\s*\/?>|[^<]+|</g;
+  /<!--|<\/(?<closeName>[a-zA-Z][a-zA-Z0-9]*)\s*>|<(?<openName>[a-zA-Z][a-zA-Z0-9]*)(?<openAttrs>(?:\s+[^<>]*)?)\s*\/?>|[^<]+|</g;
 
 interface Frame {
   name: string;
@@ -215,9 +219,9 @@ function handleCloseTag(state: ScanState, name: string): void {
   state.stack.length = idx; // pop this frame and any unbalanced descendants above it
 }
 
-function handleComment(state: ScanState, token: string): void {
+function handleComment(state: ScanState, rawContent: string): void {
   if (isSkipped(state)) return;
-  const content = decodeEntities(token.slice(COMMENT_OPEN.length, -COMMENT_CLOSE.length));
+  const content = decodeEntities(rawContent);
   if (content.trim() === "") return;
   state.comments++;
   state.hidden.push(content);
@@ -264,8 +268,14 @@ export function normalizeHtml(html: string): HtmlNormalizeResult {
   let match: RegExpExecArray | null;
   while ((match = TOKEN_RE.exec(html)) !== null) {
     const token = match[0];
-    if (token.startsWith(COMMENT_OPEN)) {
-      handleComment(state, token);
+    if (token === COMMENT_OPEN) {
+      // Linear scan for the terminator instead of a lazy-quantifier regex
+      // (see TOKEN_RE comment). Absent terminator: rest of document is the
+      // comment.
+      const closeIdx = html.indexOf(COMMENT_CLOSE, TOKEN_RE.lastIndex);
+      const contentEnd = closeIdx === -1 ? html.length : closeIdx;
+      handleComment(state, html.slice(TOKEN_RE.lastIndex, contentEnd));
+      TOKEN_RE.lastIndex = closeIdx === -1 ? html.length : closeIdx + COMMENT_CLOSE.length;
     } else if (match.groups?.closeName !== undefined) {
       handleCloseTag(state, match.groups.closeName.toLowerCase());
     } else if (match.groups?.openName !== undefined) {

@@ -779,13 +779,15 @@ function generateDelimiterNonce(): string {
  * If the tag has no trailing bracket/angle, the nonce is appended.
  */
 function applyNonceToTag(tag: string, nonce: string): string {
-  // Match a trailing run of closing brackets (>, ], }) so we insert
-  // the nonce just before them. Captures handle open/close forms.
-  const m = tag.match(/^(.*?)([>\])}]+)$/);
-  if (m !== null) {
-    return `${m[1]}_${nonce}${m[2]}`;
+  // Walk backward over a trailing run of closing brackets (>, ], }) so we
+  // insert the nonce just before them, without the quadratic backtracking
+  // of a lazy-quantifier regex on inputs with many trailing brackets
+  // (CodeQL js/polynomial-redos).
+  let i = tag.length - 1;
+  while (i >= 0 && (tag[i] === ">" || tag[i] === "]" || tag[i] === ")" || tag[i] === "}")) {
+    i--;
   }
-  return `${tag}_${nonce}`;
+  return i === tag.length - 1 ? `${tag}_${nonce}` : `${tag.slice(0, i + 1)}_${nonce}${tag.slice(i + 1)}`;
 }
 
 /**

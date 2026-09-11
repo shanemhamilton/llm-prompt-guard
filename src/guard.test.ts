@@ -1748,6 +1748,23 @@ describe("sanitize() — quarantine randomizeDelimiters", () => {
     expect(result.sanitized).toMatch(/BEGIN_[0-9a-f]{12}/);
     expect(result.sanitized).toMatch(/END_[0-9a-f]{12}/);
   });
+
+  // Regression for CodeQL js/polynomial-redos: `applyNonceToTag` used to
+  // find the trailing bracket run with a lazy `/^(.*?)([>\])}]+)$/` regex,
+  // quadratic on a tag ending in many closing brackets.
+  test("a 10,000-char run of trailing closing brackets nonces in under 50ms", () => {
+    const closeTag = `END${")".repeat(10_000)}`;
+    const config: FieldConfig = {
+      maxLength: 1000,
+      mode: "quarantine",
+      fieldName: "msg",
+      quarantineOptions: { openTag: "BEGIN", closeTag, randomizeDelimiters: true },
+    };
+    const start = Date.now();
+    const result = sanitize("hello", config);
+    expect(Date.now() - start).toBeLessThan(50);
+    expect(result.sanitized).toMatch(/END_[0-9a-f]{12}\){10000}/);
+  });
 });
 
 // ── Tag mode ─────────────────────────────────────────────────────────

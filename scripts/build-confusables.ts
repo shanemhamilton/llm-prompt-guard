@@ -25,9 +25,34 @@ const MATH_ALPHANUMERIC_END = 0x1d7ff;
 
 const ASCII_ALNUM = /^[A-Za-z0-9]$/;
 const COMBINING_MARKS = /\p{M}/gu;
+const HEX_CODEPOINT_RE = /^[0-9a-fA-F]+$/;
+const EXPECTED_HEADER_PREFIX = "# confusables";
+/** Sanity floor: a legitimate confusables.txt yields several thousand entries. */
+const MIN_ENTRIES = 500;
 
 function stripToBase(ch: string): string {
   return ch.normalize("NFKD").replace(COMBINING_MARKS, "");
+}
+
+/**
+ * Guard against a fetch that silently returned something other than
+ * Unicode's confusables.txt (redirect to an HTML error page, a CDN
+ * placeholder, a truncated response). CodeQL flags `confusablesText` as
+ * tainted regardless — this is the actual mitigation: reject anything
+ * that isn't shaped like the real file before it's parsed or written.
+ */
+function assertValidHeader(text: string): void {
+  const firstLine = text.split("\n", 1)[0] ?? "";
+  if (!firstLine.startsWith(EXPECTED_HEADER_PREFIX)) {
+    throw new Error(
+      `confusables.txt did not start with "${EXPECTED_HEADER_PREFIX}" — got: ${JSON.stringify(firstLine)}`
+    );
+  }
+}
+
+/** A field is a valid code point sequence only if every token is pure hex. */
+function isValidHexSequence(tokens: string[]): boolean {
+  return tokens.length > 0 && tokens.every((h) => HEX_CODEPOINT_RE.test(h));
 }
 
 function parseConfusables(text: string): Map<number, string> {
@@ -39,6 +64,7 @@ function parseConfusables(text: string): Map<number, string> {
     const sourceHex = sourceField.trim().split(/\s+/).filter(Boolean);
     const targetHex = targetField.trim().split(/\s+/).filter(Boolean);
     if (sourceHex.length !== 1) continue; // source must be a single code point
+    if (!isValidHexSequence(sourceHex) || !isValidHexSequence(targetHex)) continue;
 
     const sourceCp = parseInt(sourceHex[0], 16);
     if (sourceCp <= 0x7f) continue; // source must be non-ASCII
@@ -114,10 +140,15 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  assertValidHeader(confusablesText);
+
   const versionLine =
     confusablesText.split("\n").find((l) => l.startsWith("# Date:")) ?? "# Date: unknown";
 
   let entries = parseConfusables(confusablesText);
+  if (entries.size < MIN_ENTRIES) {
+    throw new Error(`Only ${entries.size} confusable entries parsed — expected at least ${MIN_ENTRIES}.`);
+  }
   let droppedMathBlock = false;
 
   const render = (map: Map<number, string>) => {

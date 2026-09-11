@@ -217,6 +217,22 @@ describe("normalizeHtml", () => {
     expect(r.signals.hasHiddenText).toBe(true);
   });
 
+  // Regression for CodeQL js/polynomial-redos: the old comment scanner used
+  // a lazy `[\s\S]*?-->` quantifier, quadratic on many unterminated "<!--".
+  it("normalizes many unterminated comment openers in under 100ms", () => {
+    const nasty = "<!-- ".repeat(50_000);
+    const start = Date.now();
+    expect(() => normalizeHtml(nasty)).not.toThrow();
+    expect(Date.now() - start).toBeLessThan(100);
+  });
+
+  it("normalizes many <script> openers in under 100ms", () => {
+    const nasty = "<script>".repeat(20_000);
+    const start = Date.now();
+    expect(() => normalizeHtml(nasty)).not.toThrow();
+    expect(Date.now() - start).toBeLessThan(100);
+  });
+
   // ── End-to-end RAG example ───────────────────────────────────────────
 
   it("separates a display:none injection payload from real product-page text", () => {
