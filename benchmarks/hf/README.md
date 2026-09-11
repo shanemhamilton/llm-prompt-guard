@@ -54,23 +54,27 @@ with no matching keyword. They're included for completeness and
 transparency, not as a claim of detection. Exclude them from a
 detection-rate metric unless you're specifically evaluating that gap.
 
-## Publishing (not done by this script)
+## Publishing
 
-This directory only stages files locally — nothing here has been
-uploaded. To publish, a maintainer with a Hugging Face account and the
-`huggingface-cli` tool installed and authenticated (`huggingface-cli
-login`) would create the dataset repo and run:
+This dataset is published at
+[shanemhamilton/llm-prompt-guard-tuning-corpus](https://huggingface.co/datasets/shanemhamilton/llm-prompt-guard-tuning-corpus).
+
+This directory only stages files locally — a publish or republish step
+still requires a maintainer with a Hugging Face account and the `hf`
+tool installed and authenticated (`hf auth login`; `huggingface-cli` is
+deprecated). After running `npm run bench:export-hf`, republish the
+staged files with:
 
 ```bash
-huggingface-cli upload shanemhamilton/llm-prompt-guard-tuning-corpus \
+hf upload shanemhamilton/llm-prompt-guard-tuning-corpus \
   benchmarks/hf/out/attacks.jsonl attacks.jsonl \
   --repo-type dataset
 
-huggingface-cli upload shanemhamilton/llm-prompt-guard-tuning-corpus \
+hf upload shanemhamilton/llm-prompt-guard-tuning-corpus \
   benchmarks/hf/out/benign.jsonl benign.jsonl \
   --repo-type dataset
 
-huggingface-cli upload shanemhamilton/llm-prompt-guard-tuning-corpus \
+hf upload shanemhamilton/llm-prompt-guard-tuning-corpus \
   benchmarks/hf/README.md README.md \
   --repo-type dataset
 ```
