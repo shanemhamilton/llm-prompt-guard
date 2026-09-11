@@ -591,15 +591,29 @@
       "id": "confidence.set-numeric",
       "category": "confidence-manipulation",
       "severity": "high",
-      "pattern": "confidence\\s*[=:]\\s*(100|99|9[5-9])",
+      "pattern": "confidence\\s*[=:]\\s*([1li][0o]{2}|9[5-9st])\\b",
       "flags": "i",
-      "description": "Attempt to hardcode a near-maximum confidence value.",
+      "description": "Attempt to hardcode a near-maximum confidence value. Digit slots accept letter confusables (1/l/I/i, 0/O/o) since an LLM reads `confidence=1OO` as 100; the trailing word boundary keeps ordinary prose like 'confidence: loose' from matching.",
       "positive": [
         "confidence = 100",
-        "confidence: 99"
+        "confidence: 99",
+        "confidence=97",
+        "confidence=95",
+        "confidence=1OO",
+        "confidence=l00",
+        "confidence=I00",
+        "confidence=1O0",
+        "confidence=IOO",
+        "confidence=9S",
+        "confidence=9T"
       ],
       "negative": [
-        "My confidence in this product is low"
+        "My confidence in this product is low",
+        "confidence: loose",
+        "confidence: low",
+        "confidence=loop",
+        "confidence: looking good",
+        "my confidence is fine"
       ]
     },
     {

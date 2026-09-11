@@ -89,6 +89,46 @@ describe("Canary token detection", () => {
     expect(result.flags.filter((f) => f.type === "canary_leak")).toHaveLength(1);
   });
 
+  // ── Homoglyph / NFKD canary evasion (regression) ──────────────────
+  //
+  // A canary is `CANARY_` + hex. Cyrillic а/е/с are confusable with the
+  // hex digits a/e/c, so before the canary check ran the full
+  // output-safe normalization, a single substituted character defeated
+  // the exact `.includes()` match while the LLM still emitted a canary
+  // any human would read as leaked. Fixed canaries here (rather than
+  // generateCanary()) so the substituted character is deterministic.
+  const FIXED_CANARY = "CANARY_a1b2c3d4e5f6a7b8c9d0e1f23";
+
+  test("flags a canary echoed with a Cyrillic homoglyph substituted", () => {
+    const cyrillicA = String.fromCodePoint(0x0430); // 'а' — confusable with 'a'
+    const evaded = FIXED_CANARY.replace("a", cyrillicA);
+    expect(evaded).not.toBe(FIXED_CANARY); // substitution actually happened
+
+    const validator = createOutputValidator({ canaryTokens: [FIXED_CANARY] });
+    const result = validator.validate(`Sure, here it is: ${evaded}`);
+    expect(result.safe).toBe(false);
+    expect(result.flags.filter((f) => f.type === "canary_leak")).toHaveLength(1);
+  });
+
+  test("flags a canary echoed with fullwidth digits", () => {
+    // NFKD folds fullwidth forms back to ASCII.
+    const fullwidthOne = String.fromCodePoint(0xff11); // '１'
+    const evaded = FIXED_CANARY.replace("1", fullwidthOne);
+    expect(evaded).not.toBe(FIXED_CANARY);
+
+    const validator = createOutputValidator({ canaryTokens: [FIXED_CANARY] });
+    const result = validator.validate(`Leaked: ${evaded}`);
+    expect(result.safe).toBe(false);
+    expect(result.flags.filter((f) => f.type === "canary_leak")).toHaveLength(1);
+  });
+
+  test("does not flag unrelated text containing Cyrillic", () => {
+    const validator = createOutputValidator({ canaryTokens: [FIXED_CANARY] });
+    // Genuine Cyrillic prose must not fold into a canary match.
+    const result = validator.validate("Пример текста без канарейки.");
+    expect(result.flags.filter((f) => f.type === "canary_leak")).toHaveLength(0);
+  });
+
   test("empty canary list produces no flags", () => {
     const validator = createOutputValidator({ canaryTokens: [] });
     const result = validator.validate("CANARY_fake");

@@ -19,12 +19,15 @@ import { createSessionWith } from "./session";
 import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
+  HOMOGLYPH_MAP,
   INTERLEAVED_INVISIBLE,
   INVISIBLE_CHARS,
   INVISIBLE_CHARS_SUPPLEMENTARY,
   LEET_MAP,
   NEUTRALIZATION_MAP,
   ensureGlobalFlag,
+  normalizeForOutput,
+  stripStatefulFlags,
 } from "./patterns";
 import { createOutputValidator, generateCanary, scanOutputImpl } from "./output";
 import { CONFUSABLES_TO_ASCII, CONFUSABLE_CHARS } from "./data/confusables";
@@ -344,7 +347,17 @@ function buildPatternList(config: GuardConfig): InjectionPattern[] {
   ]);
   const base = BUILTIN_PATTERNS.filter((p) => !disabled.has(p.category));
   const demoted = applyProfileDemotions(base, config.profile);
-  return config.extraPatterns ? [...demoted, ...config.extraPatterns] : demoted;
+  if (!config.extraPatterns) return demoted;
+  // Normalize caller patterns once, here, rather than asking every
+  // `.test()` site to remember to reset `lastIndex` — see
+  // `stripStatefulFlags`. Detection reads these repeatedly, so a `/g`
+  // or `/y` pattern would otherwise misfire silently.
+  const extra = config.extraPatterns.map((p) =>
+    p.pattern.global || p.pattern.sticky
+      ? { ...p, pattern: stripStatefulFlags(p.pattern) }
+      : p
+  );
+  return [...demoted, ...extra];
 }
 
 /**
@@ -439,37 +452,6 @@ function rot13(input: string): string {
   });
 }
 
-/**
- * Cyrillic / Greek homoglyph → Latin mapping used by both the output-safe
- * normalization pass and the detection-time normalization pass. The two
- * paths must agree: detection sees the same Latin form the caller will
- * receive on the clean path, and vice versa.
- */
-const HOMOGLYPH_MAP: Record<string, string> = {
-  "\u0430": "a", // Cyrillic а
-  "\u0435": "e", // Cyrillic е
-  "\u043E": "o", // Cyrillic о
-  "\u0440": "p", // Cyrillic р
-  "\u0441": "c", // Cyrillic с
-  "\u0443": "y", // Cyrillic у
-  "\u0445": "x", // Cyrillic х
-  "\u0456": "i", // Cyrillic і (Ukrainian)
-  "\u0458": "j", // Cyrillic ј
-  "\u04BB": "h", // Cyrillic һ
-  "\u0410": "A", // Cyrillic А
-  "\u0412": "B", // Cyrillic В
-  "\u0415": "E", // Cyrillic Е
-  "\u041A": "K", // Cyrillic К
-  "\u041C": "M", // Cyrillic М
-  "\u041D": "H", // Cyrillic Н
-  "\u041E": "O", // Cyrillic О
-  "\u0420": "P", // Cyrillic Р
-  "\u0421": "C", // Cyrillic С
-  "\u0422": "T", // Cyrillic Т
-  "\u0425": "X", // Cyrillic Х
-  "\u03BF": "o", // Greek omicron ο
-  "\u03B1": "a", // Greek alpha α (when combined with NFKD)
-};
 
 const HOMOGLYPH_RANGE = /[\u0410-\u04BB\u03B1\u03BF]/g;
 const DIACRITICAL_MARKS = /[\u0300-\u036F]/g;
@@ -549,28 +531,10 @@ function foldForDetection(input: string): string {
   return foldConfusables(result); // safety net — see foldConfusablesPreNfkd doc
 }
 
-/**
- * Non-lossy output normalization — safe for returning to callers.
- *
- * Only strips invisible characters (BMP + Plane 14 tag block + VS
- * Supplement) and maps homoglyphs / NFKD-decomposed forms back to
- * their ASCII / Latin equivalents. Does NOT apply leetspeak, URL
- * decoding, separator collapse, or reversal — those are aggressive,
- * lossy transforms that are correct for detection but would corrupt
- * legitimate content containing numbers, URLs, or dots.
- *
- * Used by `sanitize()`'s clean path when `normalizeOutput !== false`.
- */
-function normalizeForOutput(input: string): string {
-  // Strip BMP invisibles, then Plane 14 Tag block + Variation Selector Supplement.
-  let result = input.replace(INVISIBLE_CHARS, "").replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
-  // NFKD decomposition (fullwidth → ASCII, ﬁ → fi, accented base separate).
-  result = result.normalize("NFKD");
-  // Strip combining diacritical marks after NFKD.
-  result = result.replace(DIACRITICAL_MARKS, "");
-  // Map Cyrillic / Greek homoglyphs to Latin — same table as detection.
-  return result.replace(HOMOGLYPH_RANGE, (ch) => HOMOGLYPH_MAP[ch] ?? ch);
-}
+// `normalizeForOutput` now lives in patterns.ts (imported above) so the
+// canary-leak check in output.ts can share it — see NEUTRALIZATION_MAP /
+// HOMOGLYPH_MAP doc comments there for why detection, the clean output
+// path, and the canary check must all agree on one Latin form.
 
 /**
  * Normalize input for detection — defeats encoding, obfuscation, and evasion attacks.
@@ -657,7 +621,10 @@ function normalizeForDetection(
 
   // Steps 1b-4c: strip invisibles, fold confusables before/after NFKD,
   // strip diacritics/modifier letters, map Cyrillic/Greek homoglyphs —
-  // see `foldForDetection` for the full step-by-step rationale.
+  // see `foldForDetection` for the full step-by-step rationale. This is
+  // a superset of `normalizeForOutput` (patterns.ts): same invisible
+  // strip, NFKD, diacritic strip, and homoglyph map, plus the wider
+  // confusables-table folding the output path deliberately omits.
   let result = foldForDetection(input);
 
   // Step 5: URL-decode %XX sequences iteratively (handles double-encoding
@@ -822,6 +789,15 @@ function applyNonceToTag(tag: string, nonce: string): string {
 }
 
 /**
+ * Escape regex metacharacters so a literal string can be embedded in a
+ * `RegExp`. Delimiters are caller-configurable ({@link FieldConfig}), so
+ * a tag like `[[untrusted]]` must not be compiled as a character class.
+ */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * Quarantine mode: wrap original text in configurable delimiters.
  * Strips occurrences of the closing delimiter from user text to prevent breakout.
  *
@@ -851,7 +827,15 @@ function quarantineInput(
   // payload can't match the nonced closing tag, so this only removes
   // actual nonced occurrences (rare — attacker would need to guess the
   // nonce first).
-  const stripped = original.split(closeTag).join("");
+  //
+  // Matched case-insensitively: XML/HTML-ish tags are read
+  // case-insensitively by the models consuming this, so `</UNTRUSTED_INPUT>`
+  // breaks out of `</untrusted_input>` just as effectively. An exact-case
+  // strip let that variant through untouched.
+  const stripped = original.replace(
+    new RegExp(escapeRegExp(closeTag), "gi"),
+    ""
+  );
 
   // Truncate unwrapped text to maxLength before wrapping.
   const safe = truncateWithLog(stripped, field, original.length, log);
@@ -1104,12 +1088,17 @@ function sanitizeForPrompt(
     }
 
     case "tag": {
-      // Tag mode: return original text unchanged with annotations.
-      // Generate tags against original (control-char-stripped) text for accurate positions.
-      const tags = generateTags(sanitized, patterns);
+      // Tag mode: return the text with injection annotations.
+      //
+      // Truncate and collapse whitespace FIRST, then locate patterns in
+      // the exact string being returned. Tagging `sanitized` beforehand
+      // produced `start`/`end` offsets into a pre-trim, pre-truncation
+      // string, so any leading whitespace or collapsed run shifted every
+      // subsequent tag — callers slicing by those offsets got the wrong
+      // span, or one past the end.
       const tagSanitized = truncateWithLog(sanitized, field, inputStr.length, log);
-      // Normalize whitespace.
       const tagTrimmed = tagSanitized.trim().replace(/\s+/g, " ");
+      const tags = generateTags(tagTrimmed, patterns);
       return {
         sanitized: tagTrimmed,
         wasModified: false,
