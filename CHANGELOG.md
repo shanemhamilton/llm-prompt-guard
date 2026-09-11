@@ -11,6 +11,32 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.2.0](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.4...v2.2.0) (2026-09-11)
+
+
+### Features
+
+* **adapters:** add framework adapters and normalize, egress, agentic subpaths ([33af397](https://github.com/shanemhamilton/llm-prompt-guard/commit/33af3976a7fecaf9470bb2794f217d99a44ee174))
+* **bench:** add held-out BIPIA evaluation with a no-tuning rule ([3747059](https://github.com/shanemhamilton/llm-prompt-guard/commit/3747059c10d884e44baa6d9ca3f6ddf804525e03))
+* cut false positives, scan tool calls, harden the normalizer ([897c560](https://github.com/shanemhamilton/llm-prompt-guard/commit/897c560af7d0af589eb73e45e9b4e068159997a3))
+* cut false positives, scan tool calls, harden the normalizer ([#39](https://github.com/shanemhamilton/llm-prompt-guard/issues/39)) ([897c560](https://github.com/shanemhamilton/llm-prompt-guard/commit/897c560af7d0af589eb73e45e9b4e068159997a3))
+* **detect:** add low severity, pattern ids, and profiles to cut false positives ([6ab1bb3](https://github.com/shanemhamilton/llm-prompt-guard/commit/6ab1bb306b82463ba518291f2f3f72e697f352c7))
+* **egress:** add scanToolCall for tool-call argument exfiltration ([728cb86](https://github.com/shanemhamilton/llm-prompt-guard/commit/728cb86cbeb442979d6af74cb26a1e8437df3f18))
+* **normalizer:** add normalizeHtml to surface hidden text in ingested pages ([a986d32](https://github.com/shanemhamilton/llm-prompt-guard/commit/a986d32e1a4e170695047c480c18191fdab7420f))
+* **normalizer:** fold 824 unicode confusables and fix three recovery gaps ([14fd1f2](https://github.com/shanemhamilton/llm-prompt-guard/commit/14fd1f224b977e6af42594ebb6d33c2541af8448))
+* **session:** accept an external per-turn score in record() ([f343c6b](https://github.com/shanemhamilton/llm-prompt-guard/commit/f343c6b16b071c5cdbfa1ad54b73d528da461699))
+
+
+### Bug Fixes
+
+* **security:** make the html tokenizer and tag nonce insertion linear-time ([698cbec](https://github.com/shanemhamilton/llm-prompt-guard/commit/698cbec7bf0a3f1bd758a467b52b7399fe3af0c6))
+* **security:** scan html tag attributes with a bounded indexOf lookup ([3c4758a](https://github.com/shanemhamilton/llm-prompt-guard/commit/3c4758ab9bf47b4a17ea2422fd029de91574f494))
+
+
+### Code Refactoring
+
+* **patterns:** move builtin patterns to a versioned json spec with tests ([f6beefd](https://github.com/shanemhamilton/llm-prompt-guard/commit/f6beefd2df6c4d9bc0a509467fdfacdf38aa1a81))
+
 ## [2.1.4](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.3...v2.1.4) (2026-08-10)
 
 
