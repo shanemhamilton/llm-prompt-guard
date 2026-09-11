@@ -544,6 +544,17 @@ export interface ToolResultOptions {
 }
 
 /**
+ * A precomputed per-turn verdict from any scorer — a classifier, an LLM
+ * judge, or this library's own {@link AssessResult} (which satisfies
+ * this shape structurally, so `session.record(assess(text))` compiles
+ * without conversion). Only `score` is required; the rest of
+ * `AssessResult`'s fields (`reasons` included) default when omitted —
+ * see {@link SessionGuard.record}.
+ */
+export type ExternalTurnScore = Pick<AssessResult, "score"> &
+  Partial<Omit<AssessResult, "score">>;
+
+/**
  * Rolling risk state for a single conversation, produced by
  * {@link SessionGuard.record}.
  */
@@ -596,8 +607,16 @@ export interface SessionConfig {
  * your own session storage).
  */
 export interface SessionGuard {
-  /** Assess one turn of user input and fold it into session state. */
-  record(input: string): SessionAssessment;
+  /**
+   * Assess one turn and fold it into session state. Accepts raw text,
+   * scored by this library's built-in patterns, or a precomputed
+   * {@link ExternalTurnScore} from an external classifier or LLM judge:
+   * ```ts
+   * session.record(text);
+   * session.record({ score: 0.6, reasons: ["jailbreak"] });
+   * ```
+   */
+  record(input: string | ExternalTurnScore): SessionAssessment;
   /** Current session state without recording a turn. */
   state(): SessionState;
   /** Clear accumulated state (e.g. after a verified human handoff). */
