@@ -15,14 +15,15 @@ import type {
   SanitizationMode,
   SanitizationResult,
   OutputValidationResult,
+  GuardProfile,
 } from "../src";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync } from "fs";
 import { resolve } from "path";
 import { performance } from "perf_hooks";
 
 // ── Types ────────────────────────────────────────────────────────────
 
-interface AttackEntry { payload: string; expected: "detect" | "known-miss" }
+interface AttackEntry { payload: string; expected: "detect" | "known-miss"; note?: string }
 interface AttackCorpus { version: number; description: string; categories: Record<string, AttackEntry[]> }
 interface CategoryStats {
   detectExpected: number; truePositives: number; falseNegatives: number;
@@ -30,23 +31,67 @@ interface CategoryStats {
 }
 interface BadOutputEntry { label: string; output: string }
 interface ModeStat { runs: number; valid: number; crashes: number; firstError?: string }
+interface DomainCorpusStat {
+  corpus: string; total: number; defaultFp: number; defaultFpr: number;
+  scoreAbove90: number; profile?: GuardProfile; profileFp?: number; profileFpr?: number;
+}
 
 // ── Config ───────────────────────────────────────────────────────────
 
 const BENCH_DIR = __dirname;
 const BENIGN_PATH = resolve(BENCH_DIR, "corpora/benign.txt");
+const BENIGN_DOMAIN_DIR = resolve(BENCH_DIR, "corpora/benign");
 const ATTACKS_PATH = resolve(BENCH_DIR, "corpora/attacks.json");
 const RESULTS_PATH = resolve(BENCH_DIR, "RESULTS.md");
 const FPR_THRESHOLD_PERCENT = 2.0;
+/**
+ * Tighter ceiling for a corpus scored under the `GuardProfile` built for
+ * its domain (e.g. developer-chat.txt under `"developer-tool"`) — a
+ * profile that still misses this bar isn't doing its job.
+ */
+const PROFILE_FPR_THRESHOLD_PERCENT = 1.0;
+const SCORE_REVIEW_THRESHOLD = 0.9;
 const ALL_MODES: SanitizationMode[] = ["block", "neutralize", "excise", "quarantine", "tag"];
+
+/** corpus filename (without extension) → the GuardProfile built for that domain. */
+const DOMAIN_PROFILES: Record<string, GuardProfile> = {
+  "developer-chat": "developer-tool",
+  "sql-assistant": "data-assistant",
+  education: "education",
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-const loadBenign = (): string[] =>
-  readFileSync(BENIGN_PATH, "utf-8")
+/** Load a benign corpus file: strip comments/blanks, unescape literal `\n` into real newlines. */
+const loadBenign = (path: string = BENIGN_PATH): string[] =>
+  readFileSync(path, "utf-8")
     .split("\n")
-    .map((l) => l.trimEnd())
-    .filter((l) => l.length > 0 && !l.startsWith("#"));
+    .map((l) => l.replace(/\\n/g, "\n").trimEnd())
+    .filter((l) => l.trim().length > 0 && !l.trim().startsWith("#"));
+
+const loadDomainCorpora = (): { name: string; lines: string[] }[] =>
+  readdirSync(BENIGN_DOMAIN_DIR)
+    .filter((f) => f.endsWith(".txt"))
+    .sort()
+    .map((f) => ({ name: f.replace(/\.txt$/, ""), lines: loadBenign(resolve(BENIGN_DOMAIN_DIR, f)) }));
+
+function scoreDomainCorpus(name: string, lines: string[]): DomainCorpusStat {
+  const defaultGuard = createGuard();
+  const defaultFp = lines.filter((l) => defaultGuard.detect(l)).length;
+  const scoreAbove90 = lines.filter((l) => defaultGuard.assess(l).score >= SCORE_REVIEW_THRESHOLD).length;
+  const stat: DomainCorpusStat = {
+    corpus: name, total: lines.length, defaultFp, defaultFpr: pct(defaultFp, lines.length), scoreAbove90,
+  };
+  const profile = DOMAIN_PROFILES[name];
+  if (profile) {
+    const profileGuard = createGuard({ profile });
+    const profileFp = lines.filter((l) => profileGuard.detect(l)).length;
+    stat.profile = profile;
+    stat.profileFp = profileFp;
+    stat.profileFpr = pct(profileFp, lines.length);
+  }
+  return stat;
+}
 
 const loadAttacks = (): AttackCorpus =>
   JSON.parse(readFileSync(ATTACKS_PATH, "utf-8")) as AttackCorpus;
@@ -275,11 +320,36 @@ function main(): number {
   if (scanAvail) p(`scanOutput coverage: ${scanFlagged}/${scanRuns} probes flagged (exfil shapes).`);
   else p("scanOutput coverage: skipped — guard.scanOutput() not present in this build.");
 
+  // ── Domain benign corpora (per-corpus FPR, default vs. matching profile) ──
+  const domainStats = loadDomainCorpora().map(({ name, lines }) => scoreDomainCorpus(name, lines));
+
+  p();
+  p("Domain benign corpora (default profile vs. matching GuardProfile):");
+  p(`  ${"corpus".padEnd(16)} ${"n".padEnd(5)} ${"default FP".padEnd(12)} ${"profile".padEnd(15)} ${"profile FP".padEnd(12)} score>=${SCORE_REVIEW_THRESHOLD}`);
+  for (const s of domainStats) {
+    const profileCol = s.profile
+      ? `${s.profileFp}/${s.total} (${fmt(s.profileFpr!, 2)}%)`.padEnd(12)
+      : "n/a".padEnd(12);
+    p(
+      `  ${s.corpus.padEnd(16)} ${String(s.total).padEnd(5)} ${`${s.defaultFp}/${s.total} (${fmt(s.defaultFpr, 2)}%)`.padEnd(12)} ${(s.profile ?? "-").padEnd(15)} ${profileCol} ${s.scoreAbove90}`
+    );
+  }
+
   // Regression gate
   let exit = 0;
   if (fprPercent > FPR_THRESHOLD_PERCENT) {
     p(); p(`FAIL: FPR ${fmt(fprPercent, 2)}% exceeds threshold ${FPR_THRESHOLD_PERCENT}%.`);
     exit = 1;
+  }
+  for (const s of domainStats) {
+    if (s.defaultFpr > FPR_THRESHOLD_PERCENT) {
+      p(); p(`FAIL: ${s.corpus} default-profile FPR ${fmt(s.defaultFpr, 2)}% exceeds threshold ${FPR_THRESHOLD_PERCENT}%.`);
+      exit = 1;
+    }
+    if (s.profile !== undefined && s.profileFpr! > PROFILE_FPR_THRESHOLD_PERCENT) {
+      p(); p(`FAIL: ${s.corpus} [${s.profile}] FPR ${fmt(s.profileFpr!, 2)}% exceeds threshold ${PROFILE_FPR_THRESHOLD_PERCENT}%.`);
+      exit = 1;
+    }
   }
   if (totalFN > 0) {
     p(); p(`FAIL: ${totalFN} detect-expected attacks escaped detection. See list above.`);
@@ -302,6 +372,10 @@ function main(): number {
   const missRow = badOutputMisses.length > 0
     ? [`| Unflagged labels | ${badOutputMisses.join(", ")} |`]
     : [];
+  const domainRows = domainStats.map((s) => {
+    const profileCell = s.profile ? `${s.profile} (${s.profileFp}/${s.total}, ${fmt(s.profileFpr!, 2)}%)` : "—";
+    return `| ${s.corpus} | ${s.total} | ${s.defaultFp} | ${fmt(s.defaultFpr, 2)}% | ${profileCell} | ${s.scoreAbove90} |`;
+  });
 
   const md = `# llm-prompt-guard benchmark results
 
@@ -337,6 +411,21 @@ Generated by \`benchmarks/run.ts\`. Regenerated on every run — do not edit by 
 | Latency p50 | ${fmt(aP50)} ms |
 | Latency p95 | ${fmt(aP95)} ms |
 | Latency p99 | ${fmt(aP99)} ms |
+
+## Domain benign corpora (mention-of-AI false positive check)
+
+Six corpora (\`benchmarks/corpora/benign/*.txt\`) of benign inputs that
+mention AI, prompts, databases, or role-play — the false-positive class
+the curated \`benign.txt\` (skincare reviews) corpus above cannot catch.
+Scored two ways: \`detect()\` under the default profile (gate: FPR ≤
+${FPR_THRESHOLD_PERCENT}%), and under the \`GuardProfile\` built for that
+domain where one exists (gate: FPR ≤ ${PROFILE_FPR_THRESHOLD_PERCENT}%).
+The \`score>=${SCORE_REVIEW_THRESHOLD}\` column is informational — the
+\`detect()\` gate already covers it, since \`detect() ⟺ score ≥ 0.5\`.
+
+| Corpus | Inputs | Default FP | Default FPR | Matching profile (FP, FPR) | score≥${SCORE_REVIEW_THRESHOLD} |
+| --- | ---: | ---: | ---: | --- | ---: |
+${domainRows.join("\n")}
 
 ## Per-category detection
 

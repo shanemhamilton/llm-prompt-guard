@@ -12,8 +12,19 @@ export {
   fingerprintTool,
   wrapToolResult,
 } from "./agentic";
+export { scanToolCall } from "./tool-call";
+export type {
+  ToolCallScanOptions,
+  ToolCallFinding,
+  ToolCallFindingType,
+  ToolCallScanResult,
+} from "./tool-call";
+export { normalizeHtml } from "./html";
+export type { HtmlSignals, HtmlNormalizeResult } from "./html";
 export { BUILTIN_PATTERNS, NEUTRALIZATION_MAP, LEET_MAP, ensureGlobalFlag } from "./patterns";
 export { generateCanary, createOutputValidator, scanOutput } from "./output";
+export { PROFILES } from "./profiles";
+export type { GuardProfile, ProfileRules } from "./profiles";
 export type {
   SanitizationResult,
   SanitizationMode,
@@ -45,4 +56,5 @@ export type {
   SessionGuard,
   SessionState,
   SessionAssessment,
+  ExternalTurnScore,
 } from "./types";

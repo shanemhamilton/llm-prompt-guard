@@ -15,6 +15,46 @@
       "types": "./dist/patterns/multilingual.d.ts",
       "import": "./dist/patterns/multilingual.mjs",
       "require": "./dist/patterns/multilingual.js"
+    },
+    "./normalize": {
+      "types": "./dist/normalize.d.ts",
+      "import": "./dist/normalize.mjs",
+      "require": "./dist/normalize.js"
+    },
+    "./egress": {
+      "types": "./dist/egress.d.ts",
+      "import": "./dist/egress.mjs",
+      "require": "./dist/egress.js"
+    },
+    "./agentic": {
+      "types": "./dist/agentic.d.ts",
+      "import": "./dist/agentic.mjs",
+      "require": "./dist/agentic.js"
+    },
+    "./adapters/vercel-ai": {
+      "types": "./dist/adapters/vercel-ai.d.ts",
+      "import": "./dist/adapters/vercel-ai.mjs",
+      "require": "./dist/adapters/vercel-ai.js"
+    },
+    "./adapters/langchain": {
+      "types": "./dist/adapters/langchain.d.ts",
+      "import": "./dist/adapters/langchain.mjs",
+      "require": "./dist/adapters/langchain.js"
+    },
+    "./adapters/mcp": {
+      "types": "./dist/adapters/mcp.d.ts",
+      "import": "./dist/adapters/mcp.mjs",
+      "require": "./dist/adapters/mcp.js"
+    },
+    "./adapters/express": {
+      "types": "./dist/adapters/express.d.ts",
+      "import": "./dist/adapters/express.mjs",
+      "require": "./dist/adapters/express.js"
+    },
+    "./adapters/hono": {
+      "types": "./dist/adapters/hono.d.ts",
+      "import": "./dist/adapters/hono.mjs",
+      "require": "./dist/adapters/hono.js"
     }
   },
   "files": [
@@ -25,12 +65,16 @@
   ],
   "scripts": {
     "build": "tsup",
+    "build:playground": "tsup",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "lint": "eslint src benchmarks",
+    "lint": "eslint src benchmarks playground scripts",
     "typecheck": "tsc --noEmit",
+    "build:confusables": "ts-node scripts/build-confusables.ts",
     "bench": "ts-node benchmarks/run.ts",
     "bench:public": "ts-node benchmarks/public.ts",
+    "bench:heldout": "ts-node benchmarks/heldout/run.ts",
+    "bench:export-hf": "ts-node benchmarks/hf/export.ts",
     "prepare": "tsup",
     "prepublishOnly": "npm run build"
   },

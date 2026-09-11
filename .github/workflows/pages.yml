@@ -1,0 +1,63 @@
+# This workflow does nothing until the repository's GitHub Pages setting is
+# switched to "GitHub Actions" as the source (Settings → Pages → Build and
+# deployment). That's a one-time step only a repo maintainer with admin
+# access can do; the workflow is inert (no Pages environment to deploy to)
+# until then.
+name: Deploy playground to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'playground/**'
+      - 'src/**'
+      - '.github/workflows/pages.yml'
+
+permissions: {}
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build playground
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build playground bundle
+        run: npm run build:playground
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: playground
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

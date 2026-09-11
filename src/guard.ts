@@ -19,9 +19,10 @@ import { createSessionWith } from "./session";
 import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
-  CYRILLIC_GREEK,
   HOMOGLYPH_MAP,
   INTERLEAVED_INVISIBLE,
+  INVISIBLE_CHARS,
+  INVISIBLE_CHARS_SUPPLEMENTARY,
   LEET_MAP,
   NEUTRALIZATION_MAP,
   ensureGlobalFlag,
@@ -29,6 +30,8 @@ import {
   stripStatefulFlags,
 } from "./patterns";
 import { createOutputValidator, generateCanary, scanOutputImpl } from "./output";
+import { CONFUSABLES_TO_ASCII, CONFUSABLE_CHARS } from "./data/confusables";
+import { applyProfileDemotions, getProfileRules, PROFILES } from "./profiles";
 
 /** No-op logger used when the caller does not provide one. */
 const SILENT_LOGGER: Logger = {
@@ -59,6 +62,16 @@ const SCORE_HOMOGLYPH = 0.3;
 const SCORE_INTERLEAVE = 0.3;
 const SCORE_BASE64_TEXT = 0.2;
 const SCORE_TRUNCATED = 0.1;
+/**
+ * Score contributed by each `"low"`-severity pattern match (a bare,
+ * ambiguous keyword with no directive context — see `Severity`),
+ * capped at `SCORE_LOW_CAP` total regardless of how many low patterns
+ * matched. Low matches are assess()-only: they never set
+ * `hasHighSeverity`, never move `patternsDetected`, and are invisible
+ * to `detect()`, `count()`, and `sanitize()`.
+ */
+const SCORE_LOW_PATTERN = 0.15;
+const SCORE_LOW_CAP = 0.3;
 /** Interleaved-invisible occurrences required before the signal scores. */
 const INTERLEAVE_SCORE_THRESHOLD = 3;
 /** Confusable Cyrillic/Greek letters required to flag mixed script. */
@@ -100,6 +113,11 @@ const MIN_DECODED_PHRASE_LENGTH = 12;
  */
 export function createGuard(config: GuardConfig = {}) {
   const log: Logger = config.logger ?? SILENT_LOGGER;
+  if (config.profile !== undefined && !(config.profile in PROFILES)) {
+    throw new RangeError(
+      `GuardConfig.profile must be one of ${Object.keys(PROFILES).join(", ")}, got: ${config.profile}`
+    );
+  }
   const patterns = buildPatternList(config);
   const outputValidator = config.outputValidation
     ? createOutputValidator(config.outputValidation)
@@ -322,9 +340,14 @@ export function createSession(config?: SessionConfig): SessionGuard {
 // ── Core implementation ──────────────────────────────────────────────
 
 function buildPatternList(config: GuardConfig): InjectionPattern[] {
-  const disabled = new Set(config.disableCategories ?? []);
+  const profileRules = getProfileRules(config.profile);
+  const disabled = new Set([
+    ...profileRules.disableCategories,
+    ...(config.disableCategories ?? []),
+  ]);
   const base = BUILTIN_PATTERNS.filter((p) => !disabled.has(p.category));
-  if (!config.extraPatterns) return base;
+  const demoted = applyProfileDemotions(base, config.profile);
+  if (!config.extraPatterns) return demoted;
   // Normalize caller patterns once, here, rather than asking every
   // `.test()` site to remember to reset `lastIndex` — see
   // `stripStatefulFlags`. Detection reads these repeatedly, so a `/g`
@@ -334,7 +357,17 @@ function buildPatternList(config: GuardConfig): InjectionPattern[] {
       ? { ...p, pattern: stripStatefulFlags(p.pattern) }
       : p
   );
-  return [...base, ...extra];
+  return [...demoted, ...extra];
+}
+
+/**
+ * `"low"`-severity patterns are an assess()-only signal (see `Severity`
+ * doc comment) — every other detection surface (`detect`, `count`,
+ * `sanitize` in all five modes) must act as if they were not in the
+ * pattern list at all.
+ */
+function isDetectable(pattern: InjectionPattern): boolean {
+  return pattern.severity !== "low";
 }
 
 /**
@@ -420,6 +453,88 @@ function rot13(input: string): string {
 }
 
 
+const HOMOGLYPH_RANGE = /[\u0410-\u04BB\u03B1\u03BF]/g;
+const DIACRITICAL_MARKS = /[\u0300-\u036F]/g;
+/**
+ * Spacing Modifier Letters (U+02B0\u2013U+02FF) \u2014 not combining marks, but
+ * NFKD's compatibility decomposition of a few confusable characters
+ * (e.g. U+1E9A "\u1E9A" \u2192 "a" + U+02BE MODIFIER LETTER RIGHT HALF RING)
+ * leaves one behind mid-word, corrupting the token. Detection-only
+ * strip \u2014 see `normalizeForDetection`. `normalizeForOutput` keeps the
+ * narrower \u0300-\u036F strip so legitimate modifier-letter usage
+ * (IPA, phonetic transcription) survives the non-lossy output path.
+ */
+const MODIFIER_LETTERS = /[\u02B0-\u02FF]/g;
+/** Max %-decode passes for Step 5 below \u2014 bounds work against doubly/triply percent-encoded payloads without looping on adversarial input. */
+const MAX_URL_DECODE_PASSES = 3;
+const PERCENT_ENCODED = /%[0-9A-Fa-f]{2}/;
+/**
+ * Alphanumeric run (plus the leet symbols "@"/"$") \u2014 scopes Step 8's
+ * leetspeak recovery per run rather than per whitespace-delimited token,
+ * so a non-alphanumeric separator like "=" splits a glued literal number
+ * off from an adjacent leetspoken word (e.g. "confid3nc3=95" matches
+ * "confid3nc3" and "95" as two separate runs). A run with no ASCII
+ * letter (like "95") is left untouched \u2014 almost certainly a literal
+ * number, not leetspeak.
+ */
+const LEET_TOKEN = /[A-Za-z0-9@$]+/g;
+
+/**
+ * Fold every confusable character in `text` to its single-ASCII-char
+ * equivalent, using the full Unicode-confusables table (src/data/confusables.ts \u2014
+ * generated from Unicode's confusables.txt, far wider than HOMOGLYPH_MAP's
+ * 22 hand-picked Cyrillic/Greek entries). Detection-only: this is more
+ * aggressive folding than is safe to hand back to a caller, so it is never
+ * applied on the output path (see `normalizeForOutput`, which keeps the
+ * narrower HOMOGLYPH_MAP).
+ */
+function foldConfusables(text: string): string {
+  return text.replace(CONFUSABLE_CHARS, (ch) => CONFUSABLES_TO_ASCII.get(ch) ?? ch);
+}
+
+/**
+ * Fullwidth Forms (U+FF00–FFEF) is Unicode's canonical "same letter,
+ * different display width" compatibility class — NFKD's decomposition
+ * of e.g. U+FF29 "Ｉ" to "I" is authoritative identity, not a guess.
+ * That's a different kind of mapping than most other confusables-table
+ * entries, which encode heuristic *visual* similarity to a DIFFERENT
+ * letter (e.g. U+24DB "ⓛ" circled-small-l table-folds to "I" because a
+ * plain vertical stroke in a circle reads as either glyph, even though
+ * NFKD decomposes it to "l"). Excluded from the pre-NFKD fold in
+ * `normalizeForDetection` so NFKD gets first say for width variants;
+ * the ordinary post-NFKD `foldConfusables` pass still runs as a
+ * safety net for anything this narrower pass didn't touch.
+ */
+const FULLWIDTH_FORMS = /[＀-￯]/;
+function foldConfusablesPreNfkd(text: string): string {
+  return text.replace(CONFUSABLE_CHARS, (ch) =>
+    FULLWIDTH_FORMS.test(ch) ? ch : (CONFUSABLES_TO_ASCII.get(ch) ?? ch)
+  );
+}
+
+/**
+ * Detection-path folding: strip invisibles, fold confusables to ASCII
+ * BEFORE and AFTER NFKD (see `foldConfusablesPreNfkd` / `foldConfusables`
+ * for why both passes exist), strip diacritics/modifier letters, then
+ * map Cyrillic/Greek homoglyphs. Split out of `normalizeForDetection`
+ * (steps 1b-4c) to keep that function's own body short.
+ */
+function foldForDetection(input: string): string {
+  // Strip invisibles (BMP + Plane 14 + VS Supplement) — same char
+  // classes `normalizeForOutput` uses, done explicitly here so we can
+  // fold confusables BEFORE NFKD next.
+  let result = input.replace(INVISIBLE_CHARS, "").replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+  result = foldConfusablesPreNfkd(result);
+  result = result.normalize("NFKD");
+  result = result.replace(DIACRITICAL_MARKS, "").replace(MODIFIER_LETTERS, "");
+  result = result.replace(HOMOGLYPH_RANGE, (ch) => HOMOGLYPH_MAP[ch] ?? ch);
+  return foldConfusables(result); // safety net — see foldConfusablesPreNfkd doc
+}
+
+// `normalizeForOutput` now lives in patterns.ts (imported above) so the
+// canary-leak check in output.ts can share it — see NEUTRALIZATION_MAP /
+// HOMOGLYPH_MAP doc comments there for why detection, the clean output
+// path, and the canary check must all agree on one Latin form.
 
 /**
  * Normalize input for detection — defeats encoding, obfuscation, and evasion attacks.
@@ -433,21 +548,23 @@ function rot13(input: string): string {
  * Step 10:    Append reversed normalized text (append)
  */
 /**
- * Compute the suspicious-homoglyph signal: the text mixes Latin letters
- * with Cyrillic/Greek characters that are ALL Latin look-alikes (≥2
- * confusables from HOMOGLYPH_MAP and no other Cyrillic/Greek letters).
- * Genuine Russian/Greek text contains non-confusable letters and never
- * trips this; a Latin text salted with "і"/"о"/"е" does.
+ * Compute the suspicious-homoglyph signal: a single whitespace-delimited
+ * token mixes ASCII letters with confusable characters from the full
+ * confusables table (≥2 such characters, across any script the table
+ * covers — not just Cyrillic/Greek). Pure-script prose (e.g. genuine
+ * Russian or Greek) never puts a confusable next to an ASCII letter in
+ * the same token, so it never trips this; a Latin word salted with
+ * "і"/"о"/"е" does.
  */
 function hasSuspiciousHomoglyphs(input: string): boolean {
-  const cyrillicGreek = input.match(CYRILLIC_GREEK);
-  if (!cyrillicGreek) return false;
-  let confusables = 0;
-  for (const ch of cyrillicGreek) {
-    if (HOMOGLYPH_MAP[ch] === undefined) return false; // genuine script
-    confusables++;
+  let mixedConfusables = 0;
+  for (const token of input.split(/\s+/)) {
+    if (!/[A-Za-z]/.test(token)) continue; // no ASCII letters — can't be mixed
+    for (const ch of token) {
+      if (CONFUSABLES_TO_ASCII.has(ch)) mixedConfusables++;
+    }
   }
-  return confusables >= HOMOGLYPH_SIGNAL_THRESHOLD && /[A-Za-z]/.test(input);
+  return mixedConfusables >= HOMOGLYPH_SIGNAL_THRESHOLD;
 }
 
 interface DetectionNormalization {
@@ -502,17 +619,33 @@ function normalizeForDetection(
     return match;
   });
 
-  // Steps 1b-4: Strip invisibles (BMP + Plane 14 + VS Supplement), NFKD,
-  // strip diacritics, map Cyrillic/Greek homoglyphs to Latin — see
-  // `normalizeForOutput` in patterns.ts. Detection, the clean output
-  // path, and the canary check all call it, which is what keeps them
-  // seeing the same Latin form.
-  let result = normalizeForOutput(input);
+  // Steps 1b-4c: strip invisibles, fold confusables before/after NFKD,
+  // strip diacritics/modifier letters, map Cyrillic/Greek homoglyphs —
+  // see `foldForDetection` for the full step-by-step rationale. This is
+  // a superset of `normalizeForOutput` (patterns.ts): same invisible
+  // strip, NFKD, diacritic strip, and homoglyph map, plus the wider
+  // confusables-table folding the output path deliberately omits.
+  let result = foldForDetection(input);
 
-  // Step 5: URL-decode %XX sequences
-  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) =>
-    String.fromCharCode(parseInt(hex, 16))
-  );
+  // Step 5: URL-decode %XX sequences iteratively (handles double-encoding
+  // like "%2569" -> "%69" -> "i"), capped at MAX_URL_DECODE_PASSES so
+  // adversarial input can't force unbounded looping. decodeURIComponent
+  // understands multi-byte UTF-8 percent sequences correctly but throws
+  // on a malformed one (e.g. a literal "%" in prose, or an incomplete
+  // continuation byte) — when it does, fall back to the byte-safe
+  // per-pair substitution this step used before, which never throws.
+  for (let pass = 0; pass < MAX_URL_DECODE_PASSES && PERCENT_ENCODED.test(result); pass++) {
+    let decodedPass: string;
+    try {
+      decodedPass = decodeURIComponent(result);
+    } catch {
+      decodedPass = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) =>
+        String.fromCharCode(parseInt(hex, 16))
+      );
+    }
+    if (decodedPass === result) break; // no change — stop early
+    result = decodedPass;
+  }
 
   // Step 6: Collapse character-splitting separators
   // Matches sequences like "i.g.n.o.r.e" or "1.g.n.0.r.3" (single alphanumeric chars
@@ -539,18 +672,27 @@ function normalizeForDetection(
   // Save pre-leetspeak text (needed for patterns that use digit ranges)
   const preLeetspeak = result;
 
-  // Step 8: Leetspeak normalization. Character class matches only
-  // characters that have entries in LEET_MAP (see patterns.ts).
-  result = result.replace(
-    /[013457@$]/g,
-    (ch) => LEET_MAP[ch] ?? ch
+  // Step 8: Leetspeak normalization, scoped to alphanumeric runs (see
+  // LEET_TOKEN) that contain an ASCII letter, so a purely numeric run
+  // ("100", "2024", "$5") is left alone instead of being corrupted by
+  // the digit->letter substitution.
+  result = result.replace(LEET_TOKEN, (run) =>
+    /[A-Za-z]/.test(run) ? run.replace(/[013457@$]/g, (ch) => LEET_MAP[ch] ?? ch) : run
   );
+
+  // Step 8b: Unconditional leet decode of the pre-leet text (the
+  // pre-token-aware behavior), kept ONLY as an extra detection-string
+  // segment below — never the in-place result — so a fully-digit short
+  // word with no surviving letter ("4" -> "a", "70" -> "to") still
+  // recovers, without letting a token-unaware pass corrupt literal
+  // numbers in the in-place text that excise/neutralize return.
+  const leetAll = preLeetspeak.replace(/[013457@$]/g, (ch) => LEET_MAP[ch] ?? ch);
 
   // Save the in-place normalized result
   const normalizedInPlace = result;
 
   // Append pre-leetspeak text so digit-dependent patterns still match
-  result += " " + preLeetspeak;
+  result += " " + preLeetspeak + " " + leetAll;
 
   // Step 9: Append Base64-decoded content
   for (const decoded of decodedSegments) {
@@ -600,7 +742,7 @@ function normalizeForDetection(
  */
 function excise(normalized: string, patterns: InjectionPattern[]): string {
   let result = normalized;
-  for (const { pattern } of patterns) {
+  for (const { pattern } of patterns.filter(isDetectable)) {
     const global = ensureGlobalFlag(pattern);
     result = result.replace(global, " ");
   }
@@ -637,13 +779,15 @@ function generateDelimiterNonce(): string {
  * If the tag has no trailing bracket/angle, the nonce is appended.
  */
 function applyNonceToTag(tag: string, nonce: string): string {
-  // Match a trailing run of closing brackets (>, ], }) so we insert
-  // the nonce just before them. Captures handle open/close forms.
-  const m = tag.match(/^(.*?)([>\])}]+)$/);
-  if (m !== null) {
-    return `${m[1]}_${nonce}${m[2]}`;
+  // Walk backward over a trailing run of closing brackets (>, ], }) so we
+  // insert the nonce just before them, without the quadratic backtracking
+  // of a lazy-quantifier regex on inputs with many trailing brackets
+  // (CodeQL js/polynomial-redos).
+  let i = tag.length - 1;
+  while (i >= 0 && (tag[i] === ">" || tag[i] === "]" || tag[i] === ")" || tag[i] === "}")) {
+    i--;
   }
-  return `${tag}_${nonce}`;
+  return i === tag.length - 1 ? `${tag}_${nonce}` : `${tag.slice(0, i + 1)}_${nonce}${tag.slice(i + 1)}`;
 }
 
 /**
@@ -719,7 +863,7 @@ function generateTags(
   patterns: InjectionPattern[]
 ): InjectionTag[] {
   const tags: InjectionTag[] = [];
-  for (const { pattern, severity, category } of patterns) {
+  for (const { pattern, severity, category } of patterns.filter(isDetectable)) {
     const global = ensureGlobalFlag(pattern);
     let match: RegExpExecArray | null;
     while ((match = global.exec(original)) !== null) {
@@ -839,9 +983,11 @@ function sanitizeForPrompt(
     signals,
   } = normalizeForDetection(sanitized, maxAnalyzedLength);
 
-  // Step 3: Detect injection patterns on full detection string.
+  // Step 3: Detect injection patterns on full detection string. Low
+  // severity is assess()-only (see `Severity`) — excluded here so it
+  // never blocks, neutralizes, excises, or tags.
   let hasHighSeverity = false;
-  for (const { pattern, severity } of patterns) {
+  for (const { pattern, severity } of patterns.filter(isDetectable)) {
     if (pattern.test(normalizedDetection)) {
       patternsDetected++;
       if (severity === "high") {
@@ -1011,7 +1157,7 @@ function containsInjection(
   );
   // Tag-block payloads count as detections — see sanitizeForPrompt step 3a.
   if (signals.tagBlockPayload) return true;
-  for (const { pattern } of patterns) {
+  for (const { pattern } of patterns.filter(isDetectable)) {
     if (pattern.test(detection)) return true;
   }
   return false;
@@ -1029,7 +1175,7 @@ function countPatterns(
   );
   let n = 0;
   if (signals.tagBlockPayload) n++;
-  for (const { pattern } of patterns) {
+  for (const { pattern } of patterns.filter(isDetectable)) {
     if (pattern.test(detection)) n++;
   }
   return n;
@@ -1044,6 +1190,50 @@ function emptySignals(): NormalizationSignals {
     base64DecodedText: false,
     truncatedForAnalysis: false,
   };
+}
+
+/** Per-severity match classification, feeding `assessInput`'s score. */
+interface PatternMatchSummary {
+  patternsDetected: number;
+  hasHighSeverity: boolean;
+  hasMediumSeverity: boolean;
+  /** Capped low-severity score contribution (see `SCORE_LOW_CAP`). */
+  lowScore: number;
+  /** One `low:<category>` entry per low match that contributed to `lowScore`. */
+  lowReasons: string[];
+}
+
+/**
+ * Classify every pattern match against the detection string. Low
+ * severity is assess()-only (see `Severity`): it accumulates a capped
+ * score and reasons but never sets `patternsDetected` or
+ * `hasHighSeverity` — those stay reserved for high/medium matches.
+ */
+function classifyPatternMatches(
+  detection: string,
+  patterns: InjectionPattern[]
+): PatternMatchSummary {
+  const summary: PatternMatchSummary = {
+    patternsDetected: 0,
+    hasHighSeverity: false,
+    hasMediumSeverity: false,
+    lowScore: 0,
+    lowReasons: [],
+  };
+  for (const { pattern, severity, category } of patterns) {
+    if (!pattern.test(detection)) continue;
+    if (severity === "low") {
+      if (summary.lowScore < SCORE_LOW_CAP) {
+        summary.lowScore = Math.min(SCORE_LOW_CAP, summary.lowScore + SCORE_LOW_PATTERN);
+        summary.lowReasons.push(`low:${category}`);
+      }
+      continue;
+    }
+    summary.patternsDetected++;
+    if (severity === "high") summary.hasHighSeverity = true;
+    else summary.hasMediumSeverity = true;
+  }
+  return summary;
 }
 
 function assessInput(
@@ -1065,17 +1255,8 @@ function assessInput(
     String(input),
     maxAnalyzedLength
   );
-
-  let patternsDetected = 0;
-  let hasHighSeverity = false;
-  let hasMediumSeverity = false;
-  for (const { pattern, severity } of patterns) {
-    if (pattern.test(detection)) {
-      patternsDetected++;
-      if (severity === "high") hasHighSeverity = true;
-      else hasMediumSeverity = true;
-    }
-  }
+  const { patternsDetected, hasHighSeverity, hasMediumSeverity, lowScore, lowReasons } =
+    classifyPatternMatches(detection, patterns);
 
   let score = 0;
   const reasons: string[] = [];
@@ -1085,6 +1266,10 @@ function assessInput(
   } else if (hasMediumSeverity) {
     score += SCORE_MEDIUM_PATTERN;
     reasons.push("medium-severity pattern match");
+  }
+  if (lowScore > 0) {
+    score += lowScore;
+    reasons.push(...lowReasons);
   }
   if (signals.tagBlockPayload) {
     score += SCORE_TAG_BLOCK;

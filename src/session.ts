@@ -1,5 +1,7 @@
 import type {
   AssessResult,
+  ExternalTurnScore,
+  NormalizationSignals,
   SessionAssessment,
   SessionConfig,
   SessionGuard,
@@ -25,6 +27,15 @@ const DEFAULT_SUSPICION_THRESHOLD = 0.3;
 /** Cumulative score at or above which a session reads as escalating. */
 const DEFAULT_ESCALATION_THRESHOLD = 1.5;
 
+/** No detection signals fired — used to fill in the unscanned fields of an external turn. */
+const EMPTY_SIGNALS: NormalizationSignals = {
+  tagBlockPayload: false,
+  interleavedInvisibles: 0,
+  suspiciousHomoglyphs: false,
+  base64DecodedText: false,
+  truncatedForAnalysis: false,
+};
+
 function emptyState(): SessionState {
   return {
     turns: 0,
@@ -33,6 +44,12 @@ function emptyState(): SessionState {
     flaggedTurns: 0,
     escalating: false,
   };
+}
+
+/** Clamp an external score into [0, 1]; NaN and negative values read as 0. */
+function clampScore(score: number): number {
+  if (!Number.isFinite(score) || score < 0) return 0;
+  return Math.min(score, 1);
 }
 
 /**
@@ -61,9 +78,32 @@ export function createSessionWith(
 
   let state = emptyState();
 
+  /**
+   * Normalize either input shape into an `AssessResult`. A string runs
+   * through `assessFn` as before. An `ExternalTurnScore` skips
+   * detection — its score is clamped, and any detection fields it
+   * doesn't carry (`patternsDetected`, `hasHighSeverity`, `signals`,
+   * `reasons`) default to empty/false. An `AssessResult` passed
+   * straight through (it structurally satisfies `ExternalTurnScore`)
+   * keeps its own detection fields unchanged, so `record(assess(text))`
+   * behaves exactly like `record(text)`.
+   */
+  function resolveTurn(input: string | ExternalTurnScore): AssessResult {
+    if (typeof input === "string") {
+      return assessFn(input);
+    }
+    return {
+      score: clampScore(input.score),
+      patternsDetected: input.patternsDetected ?? 0,
+      hasHighSeverity: input.hasHighSeverity ?? false,
+      signals: input.signals ?? EMPTY_SIGNALS,
+      reasons: input.reasons ?? [],
+    };
+  }
+
   return {
-    record(input: string): SessionAssessment {
-      const turn = assessFn(input);
+    record(input: string | ExternalTurnScore): SessionAssessment {
+      const turn = resolveTurn(input);
 
       state = {
         turns: state.turns + 1,

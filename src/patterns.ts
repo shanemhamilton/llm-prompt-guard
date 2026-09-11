@@ -1,4 +1,5 @@
 import type { InjectionPattern } from "./types";
+import spec from "./data/builtin-patterns.json";
 
 /**
  * Built-in injection detection patterns.
@@ -6,266 +7,26 @@ import type { InjectionPattern } from "./types";
  * Organized by attack category. Each pattern targets a specific prompt
  * injection technique documented in the OWASP LLM Top 10 (LLM01).
  *
+ * The pattern data itself lives in `src/data/builtin-patterns.json` —
+ * a versioned spec with positive/negative test cases per pattern,
+ * validated and ReDoS-checked in `src/patterns-spec.test.ts`. This file
+ * just compiles the spec's `pattern`/`flags` strings into `RegExp`
+ * instances. See CONTRIBUTING.md to add a pattern.
+ *
+ * `tool-poisoning.ts` and `multilingual.ts` (in `src/patterns/`) are a
+ * separate, still-TypeScript pattern pack — not yet migrated.
+ *
  * IMPORTANT: Do not expose pattern details in error messages returned
  * to users — this would help attackers refine bypasses.
  */
-export const BUILTIN_PATTERNS: InjectionPattern[] = [
-  // ── Instruction override ──────────────────────────────────────────
-  // Article slot accepts all/the/any/your — "ignore the above
-  // instructions" is the original Goodside (2022) phrasing and was
-  // missed when only "all" was allowed.
-  {
-    pattern:
-      /ignore\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)\s+(instructions?|prompts?|orders?|rules?|tasks?|directives?)/i,
-    severity: "high",
-    category: "instruction-override",
-  },
-  {
-    pattern: /disregard\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)/i,
-    severity: "high",
-    category: "instruction-override",
-  },
-  {
-    pattern: /forget\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)/i,
-    severity: "high",
-    category: "instruction-override",
-  },
-  {
-    pattern: /override\s+(?:(?:all|the|any|your)\s+)?(previous|prior|above|earlier|preceding)/i,
-    severity: "high",
-    category: "instruction-override",
-  },
-  {
-    pattern: /do\s+not\s+follow\s+(the\s+)?(previous|above|earlier)/i,
-    severity: "high",
-    category: "instruction-override",
-  },
-
-  // ── Role hijacking ────────────────────────────────────────────────
-  {
-    pattern: /you\s+are\s+now\s+(a|an|the)/i,
-    severity: "high",
-    category: "role-hijacking",
-  },
-  {
-    pattern: /pretend\s+(to\s+be|you('re|\s+are)?)/i,
-    severity: "high",
-    category: "role-hijacking",
-  },
-  {
-    pattern: /act\s+as\s+(if\s+)?(you('re|\s+are)?|a|an)/i,
-    severity: "high",
-    category: "role-hijacking",
-  },
-  {
-    pattern: /assume\s+the\s+role\s+of/i,
-    severity: "high",
-    category: "role-hijacking",
-  },
-  {
-    pattern: /roleplay\s+as/i,
-    severity: "high",
-    category: "role-hijacking",
-  },
-  {
-    pattern: /you\s+must\s+now/i,
-    severity: "high",
-    category: "role-hijacking",
-  },
-
-  // ── System prompt extraction ──────────────────────────────────────
-  {
-    pattern: /\bsystem\s+prompt\b/i,
-    severity: "high",
-    category: "prompt-extraction",
-  },
-  {
-    pattern: /output\s+(all|the|your)\s+(system|instructions|prompts?|rules)/i,
-    severity: "high",
-    category: "prompt-extraction",
-  },
-  {
-    pattern: /reveal\s+(your|the)\s+(instructions|prompt|rules)/i,
-    severity: "high",
-    category: "prompt-extraction",
-  },
-  {
-    pattern: /show\s+(me\s+)?(your|the)\s+(system|instructions|prompt)/i,
-    severity: "high",
-    category: "prompt-extraction",
-  },
-  {
-    pattern: /what\s+(are|is)\s+your\s+(system|initial)\s+(prompt|instructions)/i,
-    severity: "high",
-    category: "prompt-extraction",
-  },
-  {
-    pattern: /print\s+(your|the)\s+(system|initial)\s+(prompt|instructions)/i,
-    severity: "high",
-    category: "prompt-extraction",
-  },
-
-  // ── Format injection (ChatML / Llama / Alpaca / Claude / JSON) ───
-  {
-    pattern: /\{\s*"role"\s*:/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  {
-    pattern: /\{\s*"content"\s*:/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  {
-    pattern: /```\s*(json|javascript|python|typescript|bash|sh)\s*\n\s*\{/i,
-    severity: "medium",
-    category: "format-injection",
-  },
-  // ChatML tokens
-  {
-    pattern: /<\|im_start\|>/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  {
-    pattern: /<\|im_end\|>/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  // Generic ChatML-style role/control tokens
-  {
-    pattern: /<\|(system|user|assistant|endoftext)\|>/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  // Llama instruction format
-  {
-    pattern: /\[\s*\/?INST\s*\]/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  // Llama 2 system delimiters
-  {
-    pattern: /<<\/?SYS>>/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  // Alpaca / Vicuna format
-  {
-    pattern: /###\s*(System|Human|Assistant|User)\s*:/i,
-    severity: "high",
-    category: "format-injection",
-  },
-  // Anthropic Claude format (line-start anchored)
-  {
-    pattern: /^\s*(Human|Assistant)\s*:/im,
-    severity: "medium",
-    category: "format-injection",
-  },
-
-  // ── Data exfiltration ─────────────────────────────────────────────
-  {
-    pattern: /list\s+(all\s+)?(the\s+)?(database|collection|table|schema)/i,
-    severity: "high",
-    category: "data-exfiltration",
-  },
-  {
-    pattern: /dump\s+(all\s+)?(the\s+)?(data|database|collection)/i,
-    severity: "high",
-    category: "data-exfiltration",
-  },
-  {
-    pattern: /export\s+(all\s+)?(the\s+)?(data|database)/i,
-    severity: "high",
-    category: "data-exfiltration",
-  },
-  {
-    pattern: /what\s+(other\s+)?(data|information)\s+(do\s+)?you\s+have/i,
-    severity: "medium",
-    category: "data-exfiltration",
-  },
-
-  // ── Confidence / approval manipulation ────────────────────────────
-  {
-    // Digit slots accept their letter confusables: an LLM reads
-    // `confidence=1OO` and `confidence=l00` as 100, so requiring literal
-    // digits let a one-character substitution walk past this. `[1li]`
-    // covers 1/l/I/i and `[0o]` covers 0/O/o under the `i` flag.
-    //
-    // The trailing `\b` keeps it from firing on ordinary words that
-    // happen to start with those letters — without it, "confidence:
-    // loose" matches `l` + `oo` and reports a high-severity injection.
-    pattern: /confidence\s*[=:]\s*([1li][0o]{2}|9[5-9st])\b/i,
-    severity: "high",
-    category: "confidence-manipulation",
-  },
-  {
-    pattern: /set\s+confidence\s+to/i,
-    severity: "high",
-    category: "confidence-manipulation",
-  },
-  {
-    pattern: /auto[_-]?approv/i,
-    severity: "high",
-    category: "confidence-manipulation",
-  },
-  {
-    pattern: /force\s+approv/i,
-    severity: "high",
-    category: "confidence-manipulation",
-  },
-  {
-    pattern: /always\s+return\s+high\s+confidence/i,
-    severity: "high",
-    category: "confidence-manipulation",
-  },
-
-  // ── Jailbreak ─────────────────────────────────────────────────────
-  {
-    pattern: /DAN\s+mode/i,
-    severity: "high",
-    category: "jailbreak",
-  },
-  {
-    // Narrowed from /developer\s+mode/ to reduce false positives on
-    // legitimate phrases like "developer mode on my phone crashed."
-    pattern: /(?:enable|enter|activate|switch\s+to|turn\s+on)\s+developer\s+mode/i,
-    severity: "high",
-    category: "jailbreak",
-  },
-  {
-    pattern: /jailbreak/i,
-    severity: "high",
-    category: "jailbreak",
-  },
-  {
-    pattern: /bypass\s+(safety|content|filter)/i,
-    severity: "high",
-    category: "jailbreak",
-  },
-  {
-    pattern: /no\s+restrictions/i,
-    severity: "medium",
-    category: "jailbreak",
-  },
-
-  // ── Markup injection ──────────────────────────────────────────────
-  {
-    pattern: /<script[^>]*>/i,
-    severity: "high",
-    category: "markup-injection",
-  },
-  {
-    pattern: /<!--\s*INJECTION/i,
-    severity: "high",
-    category: "markup-injection",
-  },
-  {
-    pattern: /\[HIDDEN\]/i,
-    severity: "medium",
-    category: "markup-injection",
-  },
-];
+export const BUILTIN_PATTERNS: InjectionPattern[] = spec.patterns.map(
+  (p): InjectionPattern => ({
+    id: p.id,
+    category: p.category,
+    severity: p.severity as InjectionPattern["severity"],
+    pattern: new RegExp(p.pattern, p.flags),
+  })
+);
 
 /**
  * Leetspeak-to-ASCII mapping for normalization.
