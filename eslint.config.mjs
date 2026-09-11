@@ -2,7 +2,7 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/", "coverage/"] },
+  { ignores: ["dist/", "coverage/", "playground/dist/"] },
   js.configs.recommended,
   tseslint.configs.recommended,
   {
@@ -23,6 +23,22 @@ export default tseslint.config(
     rules: {
       "no-control-regex": "off",
       "no-misleading-character-class": "off",
+    },
+  },
+  {
+    // Static playground page — plain browser script, not part of the
+    // TypeScript project, so it needs browser globals instead of Node's.
+    files: ["playground/**/*.js"],
+    languageOptions: {
+      globals: {
+        window: "readonly",
+        document: "readonly",
+        navigator: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        console: "readonly",
+        LLMPromptGuard: "readonly",
+      },
     },
   },
 );

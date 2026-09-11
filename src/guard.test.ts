@@ -377,7 +377,10 @@ describe("Unicode bypass resistance", () => {
       expect(detect(attack)).toBe(true);
     });
 
-    test("folding a 100 KB mixed confusable/ASCII string stays under 30ms", () => {
+    // Measured ~3-10ms unloaded; headroom for shared CI runners.
+    const FOLD_100KB_BUDGET_MS = 150;
+
+    test("folding a 100 KB mixed confusable/ASCII string stays within budget", () => {
       const chunk = "The quick brown fox jumps over the lazy dog. аео ";
       let input = "";
       while (Buffer.byteLength(input, "utf8") < 100_000) input += chunk;
@@ -386,7 +389,7 @@ describe("Unicode bypass resistance", () => {
       detect(input);
       const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
 
-      expect(elapsedMs).toBeLessThan(30);
+      expect(elapsedMs).toBeLessThan(FOLD_100KB_BUDGET_MS);
     });
   });
 });

