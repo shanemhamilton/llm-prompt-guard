@@ -1,3 +1,5 @@
+import type { GuardProfile } from "./profiles";
+
 /**
  * Sanitization mode that determines how detected injections are handled.
  *
@@ -148,8 +150,13 @@ export interface FieldConfig {
  *   Triggers blocking when `blockOnDetection` is true.
  * - `"medium"` — Suspicious but potentially legitimate (code blocks, certain keywords in context).
  *   Always neutralized, never triggers blocking on its own.
+ * - `"low"` — A weak, ambiguous signal (a bare keyword like "jailbreak" or "system prompt"
+ *   with no directive context). `assess()`-only: each low match adds a small, capped
+ *   amount to `AssessResult.score` and a `low:<category>` entry to `reasons`, but low
+ *   matches never set `detect()` to `true`, are never counted by `count()` or
+ *   `patternsDetected`, and are never acted on by `sanitize()` in any mode.
  */
-export type Severity = "high" | "medium";
+export type Severity = "high" | "medium" | "low";
 
 /**
  * A single injection detection pattern.
@@ -161,6 +168,13 @@ export interface InjectionPattern {
   severity: Severity;
   /** Human-readable category for the pattern (not exposed to end users) */
   category: string;
+  /**
+   * Stable kebab-case identifier, e.g. `"override.ignore-previous"`. Every
+   * builtin pattern has one; user-supplied `extraPatterns` may omit it.
+   * This is the key a future patterns-as-JSON migration will use, and the
+   * key `GuardProfile`s use to demote a pattern's severity.
+   */
+  id?: string;
 }
 
 /**
@@ -289,6 +303,15 @@ export interface GuardConfig {
    * Default: 100 000. Must be a positive finite number if set.
    */
   maxAnalyzedLength?: number;
+  /**
+   * Pre-tune the built-in pattern set for a specific deployment context
+   * (see {@link GuardProfile} in `./profiles`). Applied before
+   * `disableCategories`/`extraPatterns` — a profile's `disableCategories`
+   * are unioned with this config's, and its `demoteToLow` pattern ids
+   * are rewritten to `"low"` severity. Throws on an unrecognized value.
+   * Default: `"default"` (no changes).
+   */
+  profile?: GuardProfile;
 }
 
 /**
@@ -371,6 +394,11 @@ export interface AssessResult {
    * suspicious homoglyphs 0.3, interleaved invisibles 0.3, decoded
    * base64 text 0.2, analysis truncation 0.1. Deterministic and
    * explainable via `reasons` — not a probability.
+   *
+   * Low-severity pattern matches contribute separately and are capped:
+   * each adds `SCORE_LOW_PATTERN` (0.15), up to `SCORE_LOW_CAP` (0.3)
+   * total regardless of how many low patterns matched. Low matches never
+   * set `hasHighSeverity` and never move `patternsDetected`.
    */
   score: number;
   /** Number of distinct injection patterns that matched. */

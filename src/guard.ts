@@ -28,6 +28,7 @@ import {
   ensureGlobalFlag,
 } from "./patterns";
 import { createOutputValidator, generateCanary, scanOutputImpl } from "./output";
+import { applyProfileDemotions, getProfileRules, PROFILES } from "./profiles";
 
 /** No-op logger used when the caller does not provide one. */
 const SILENT_LOGGER: Logger = {
@@ -58,6 +59,16 @@ const SCORE_HOMOGLYPH = 0.3;
 const SCORE_INTERLEAVE = 0.3;
 const SCORE_BASE64_TEXT = 0.2;
 const SCORE_TRUNCATED = 0.1;
+/**
+ * Score contributed by each `"low"`-severity pattern match (a bare,
+ * ambiguous keyword with no directive context — see `Severity`),
+ * capped at `SCORE_LOW_CAP` total regardless of how many low patterns
+ * matched. Low matches are assess()-only: they never set
+ * `hasHighSeverity`, never move `patternsDetected`, and are invisible
+ * to `detect()`, `count()`, and `sanitize()`.
+ */
+const SCORE_LOW_PATTERN = 0.15;
+const SCORE_LOW_CAP = 0.3;
 /** Interleaved-invisible occurrences required before the signal scores. */
 const INTERLEAVE_SCORE_THRESHOLD = 3;
 /** Confusable Cyrillic/Greek letters required to flag mixed script. */
@@ -99,6 +110,11 @@ const MIN_DECODED_PHRASE_LENGTH = 12;
  */
 export function createGuard(config: GuardConfig = {}) {
   const log: Logger = config.logger ?? SILENT_LOGGER;
+  if (config.profile !== undefined && !(config.profile in PROFILES)) {
+    throw new RangeError(
+      `GuardConfig.profile must be one of ${Object.keys(PROFILES).join(", ")}, got: ${config.profile}`
+    );
+  }
   const patterns = buildPatternList(config);
   const outputValidator = config.outputValidation
     ? createOutputValidator(config.outputValidation)
@@ -321,9 +337,24 @@ export function createSession(config?: SessionConfig): SessionGuard {
 // ── Core implementation ──────────────────────────────────────────────
 
 function buildPatternList(config: GuardConfig): InjectionPattern[] {
-  const disabled = new Set(config.disableCategories ?? []);
+  const profileRules = getProfileRules(config.profile);
+  const disabled = new Set([
+    ...profileRules.disableCategories,
+    ...(config.disableCategories ?? []),
+  ]);
   const base = BUILTIN_PATTERNS.filter((p) => !disabled.has(p.category));
-  return config.extraPatterns ? [...base, ...config.extraPatterns] : base;
+  const demoted = applyProfileDemotions(base, config.profile);
+  return config.extraPatterns ? [...demoted, ...config.extraPatterns] : demoted;
+}
+
+/**
+ * `"low"`-severity patterns are an assess()-only signal (see `Severity`
+ * doc comment) — every other detection surface (`detect`, `count`,
+ * `sanitize` in all five modes) must act as if they were not in the
+ * pattern list at all.
+ */
+function isDetectable(pattern: InjectionPattern): boolean {
+  return pattern.severity !== "low";
 }
 
 /**
@@ -649,7 +680,7 @@ function normalizeForDetection(
  */
 function excise(normalized: string, patterns: InjectionPattern[]): string {
   let result = normalized;
-  for (const { pattern } of patterns) {
+  for (const { pattern } of patterns.filter(isDetectable)) {
     const global = ensureGlobalFlag(pattern);
     result = result.replace(global, " ");
   }
@@ -751,7 +782,7 @@ function generateTags(
   patterns: InjectionPattern[]
 ): InjectionTag[] {
   const tags: InjectionTag[] = [];
-  for (const { pattern, severity, category } of patterns) {
+  for (const { pattern, severity, category } of patterns.filter(isDetectable)) {
     const global = ensureGlobalFlag(pattern);
     let match: RegExpExecArray | null;
     while ((match = global.exec(original)) !== null) {
@@ -871,9 +902,11 @@ function sanitizeForPrompt(
     signals,
   } = normalizeForDetection(sanitized, maxAnalyzedLength);
 
-  // Step 3: Detect injection patterns on full detection string.
+  // Step 3: Detect injection patterns on full detection string. Low
+  // severity is assess()-only (see `Severity`) — excluded here so it
+  // never blocks, neutralizes, excises, or tags.
   let hasHighSeverity = false;
-  for (const { pattern, severity } of patterns) {
+  for (const { pattern, severity } of patterns.filter(isDetectable)) {
     if (pattern.test(normalizedDetection)) {
       patternsDetected++;
       if (severity === "high") {
@@ -1038,7 +1071,7 @@ function containsInjection(
   );
   // Tag-block payloads count as detections — see sanitizeForPrompt step 3a.
   if (signals.tagBlockPayload) return true;
-  for (const { pattern } of patterns) {
+  for (const { pattern } of patterns.filter(isDetectable)) {
     if (pattern.test(detection)) return true;
   }
   return false;
@@ -1056,7 +1089,7 @@ function countPatterns(
   );
   let n = 0;
   if (signals.tagBlockPayload) n++;
-  for (const { pattern } of patterns) {
+  for (const { pattern } of patterns.filter(isDetectable)) {
     if (pattern.test(detection)) n++;
   }
   return n;
@@ -1071,6 +1104,50 @@ function emptySignals(): NormalizationSignals {
     base64DecodedText: false,
     truncatedForAnalysis: false,
   };
+}
+
+/** Per-severity match classification, feeding `assessInput`'s score. */
+interface PatternMatchSummary {
+  patternsDetected: number;
+  hasHighSeverity: boolean;
+  hasMediumSeverity: boolean;
+  /** Capped low-severity score contribution (see `SCORE_LOW_CAP`). */
+  lowScore: number;
+  /** One `low:<category>` entry per low match that contributed to `lowScore`. */
+  lowReasons: string[];
+}
+
+/**
+ * Classify every pattern match against the detection string. Low
+ * severity is assess()-only (see `Severity`): it accumulates a capped
+ * score and reasons but never sets `patternsDetected` or
+ * `hasHighSeverity` — those stay reserved for high/medium matches.
+ */
+function classifyPatternMatches(
+  detection: string,
+  patterns: InjectionPattern[]
+): PatternMatchSummary {
+  const summary: PatternMatchSummary = {
+    patternsDetected: 0,
+    hasHighSeverity: false,
+    hasMediumSeverity: false,
+    lowScore: 0,
+    lowReasons: [],
+  };
+  for (const { pattern, severity, category } of patterns) {
+    if (!pattern.test(detection)) continue;
+    if (severity === "low") {
+      if (summary.lowScore < SCORE_LOW_CAP) {
+        summary.lowScore = Math.min(SCORE_LOW_CAP, summary.lowScore + SCORE_LOW_PATTERN);
+        summary.lowReasons.push(`low:${category}`);
+      }
+      continue;
+    }
+    summary.patternsDetected++;
+    if (severity === "high") summary.hasHighSeverity = true;
+    else summary.hasMediumSeverity = true;
+  }
+  return summary;
 }
 
 function assessInput(
@@ -1092,17 +1169,8 @@ function assessInput(
     String(input),
     maxAnalyzedLength
   );
-
-  let patternsDetected = 0;
-  let hasHighSeverity = false;
-  let hasMediumSeverity = false;
-  for (const { pattern, severity } of patterns) {
-    if (pattern.test(detection)) {
-      patternsDetected++;
-      if (severity === "high") hasHighSeverity = true;
-      else hasMediumSeverity = true;
-    }
-  }
+  const { patternsDetected, hasHighSeverity, hasMediumSeverity, lowScore, lowReasons } =
+    classifyPatternMatches(detection, patterns);
 
   let score = 0;
   const reasons: string[] = [];
@@ -1112,6 +1180,10 @@ function assessInput(
   } else if (hasMediumSeverity) {
     score += SCORE_MEDIUM_PATTERN;
     reasons.push("medium-severity pattern match");
+  }
+  if (lowScore > 0) {
+    score += lowScore;
+    reasons.push(...lowReasons);
   }
   if (signals.tagBlockPayload) {
     score += SCORE_TAG_BLOCK;
