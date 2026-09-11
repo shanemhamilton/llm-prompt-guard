@@ -148,12 +148,13 @@ function normalizeWhitespace(raw: string): string {
 
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
-// Comment alternative matches only the literal "<!--" opener — the terminator
-// is then found with a linear indexOf scan (below) instead of a lazy
-// [\s\S]*? quantifier, which is quadratic on input with many "<!--" and no
-// "-->" (CodeQL js/polynomial-redos).
+// Comment and tag alternatives match only the opener/name — the terminator
+// ("-->" or the next ">") is then found with a linear indexOf scan (below)
+// instead of a lazy [\s\S]*? quantifier or adjacent \s*/[^<>]* quantifiers
+// that can both consume the same whitespace, either of which is quadratic
+// on pathological input (CodeQL js/polynomial-redos).
 const TOKEN_RE =
-  /<!--|<\/(?<closeName>[a-zA-Z][a-zA-Z0-9]*)\s*>|<(?<openName>[a-zA-Z][a-zA-Z0-9]*)(?<openAttrs>(?:\s+[^<>]*)?)\s*\/?>|[^<]+|</g;
+  /<!--|<\/(?<closeName>[A-Za-z][A-Za-z0-9:-]*)|<(?<openName>[A-Za-z][A-Za-z0-9:-]*)|[^<]+|</g;
 
 interface Frame {
   name: string;
@@ -277,12 +278,19 @@ export function normalizeHtml(html: string): HtmlNormalizeResult {
       handleComment(state, html.slice(TOKEN_RE.lastIndex, contentEnd));
       TOKEN_RE.lastIndex = closeIdx === -1 ? html.length : closeIdx + COMMENT_CLOSE.length;
     } else if (match.groups?.closeName !== undefined) {
+      // No attrs to capture — just resume past the next ">" (or EOF).
+      const gtIdx = html.indexOf(">", TOKEN_RE.lastIndex);
+      TOKEN_RE.lastIndex = gtIdx === -1 ? html.length : gtIdx + 1;
       handleCloseTag(state, match.groups.closeName.toLowerCase());
     } else if (match.groups?.openName !== undefined) {
+      const gtIdx = html.indexOf(">", TOKEN_RE.lastIndex);
+      const attrsEnd = gtIdx === -1 ? html.length : gtIdx;
+      const attrsStr = html.slice(TOKEN_RE.lastIndex, attrsEnd);
+      TOKEN_RE.lastIndex = gtIdx === -1 ? html.length : gtIdx + 1;
       handleOpenTag(state, {
         name: match.groups.openName.toLowerCase(),
-        attrsStr: match.groups.openAttrs ?? "",
-        isSelfClosing: /\/\s*>$/.test(token),
+        attrsStr,
+        isSelfClosing: /\/\s*$/.test(attrsStr),
       });
     } else {
       handleText(state, token); // plain text, or a stray "<"

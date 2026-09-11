@@ -233,6 +233,13 @@ describe("normalizeHtml", () => {
     expect(Date.now() - start).toBeLessThan(100);
   });
 
+  it("normalizes a tag name followed by 100,000 spaces in under 100ms", () => {
+    const nasty = "<a" + " ".repeat(100_000) + ">";
+    const start = Date.now();
+    expect(() => normalizeHtml(nasty)).not.toThrow();
+    expect(Date.now() - start).toBeLessThan(100);
+  });
+
   // ── End-to-end RAG example ───────────────────────────────────────────
 
   it("separates a display:none injection payload from real product-page text", () => {
