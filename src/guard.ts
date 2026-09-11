@@ -19,7 +19,6 @@ import { createSessionWith } from "./session";
 import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
-  CYRILLIC_GREEK,
   INTERLEAVED_INVISIBLE,
   INVISIBLE_CHARS,
   INVISIBLE_CHARS_SUPPLEMENTARY,
@@ -28,6 +27,7 @@ import {
   ensureGlobalFlag,
 } from "./patterns";
 import { createOutputValidator, generateCanary, scanOutputImpl } from "./output";
+import { CONFUSABLES_TO_ASCII, CONFUSABLE_CHARS } from "./data/confusables";
 import { applyProfileDemotions, getProfileRules, PROFILES } from "./profiles";
 
 /** No-op logger used when the caller does not provide one. */
@@ -473,6 +473,81 @@ const HOMOGLYPH_MAP: Record<string, string> = {
 
 const HOMOGLYPH_RANGE = /[\u0410-\u04BB\u03B1\u03BF]/g;
 const DIACRITICAL_MARKS = /[\u0300-\u036F]/g;
+/**
+ * Spacing Modifier Letters (U+02B0\u2013U+02FF) \u2014 not combining marks, but
+ * NFKD's compatibility decomposition of a few confusable characters
+ * (e.g. U+1E9A "\u1E9A" \u2192 "a" + U+02BE MODIFIER LETTER RIGHT HALF RING)
+ * leaves one behind mid-word, corrupting the token. Detection-only
+ * strip \u2014 see `normalizeForDetection`. `normalizeForOutput` keeps the
+ * narrower \u0300-\u036F strip so legitimate modifier-letter usage
+ * (IPA, phonetic transcription) survives the non-lossy output path.
+ */
+const MODIFIER_LETTERS = /[\u02B0-\u02FF]/g;
+/** Max %-decode passes for Step 5 below \u2014 bounds work against doubly/triply percent-encoded payloads without looping on adversarial input. */
+const MAX_URL_DECODE_PASSES = 3;
+const PERCENT_ENCODED = /%[0-9A-Fa-f]{2}/;
+/**
+ * Alphanumeric run (plus the leet symbols "@"/"$") \u2014 scopes Step 8's
+ * leetspeak recovery per run rather than per whitespace-delimited token,
+ * so a non-alphanumeric separator like "=" splits a glued literal number
+ * off from an adjacent leetspoken word (e.g. "confid3nc3=95" matches
+ * "confid3nc3" and "95" as two separate runs). A run with no ASCII
+ * letter (like "95") is left untouched \u2014 almost certainly a literal
+ * number, not leetspeak.
+ */
+const LEET_TOKEN = /[A-Za-z0-9@$]+/g;
+
+/**
+ * Fold every confusable character in `text` to its single-ASCII-char
+ * equivalent, using the full Unicode-confusables table (src/data/confusables.ts \u2014
+ * generated from Unicode's confusables.txt, far wider than HOMOGLYPH_MAP's
+ * 22 hand-picked Cyrillic/Greek entries). Detection-only: this is more
+ * aggressive folding than is safe to hand back to a caller, so it is never
+ * applied on the output path (see `normalizeForOutput`, which keeps the
+ * narrower HOMOGLYPH_MAP).
+ */
+function foldConfusables(text: string): string {
+  return text.replace(CONFUSABLE_CHARS, (ch) => CONFUSABLES_TO_ASCII.get(ch) ?? ch);
+}
+
+/**
+ * Fullwidth Forms (U+FF00–FFEF) is Unicode's canonical "same letter,
+ * different display width" compatibility class — NFKD's decomposition
+ * of e.g. U+FF29 "Ｉ" to "I" is authoritative identity, not a guess.
+ * That's a different kind of mapping than most other confusables-table
+ * entries, which encode heuristic *visual* similarity to a DIFFERENT
+ * letter (e.g. U+24DB "ⓛ" circled-small-l table-folds to "I" because a
+ * plain vertical stroke in a circle reads as either glyph, even though
+ * NFKD decomposes it to "l"). Excluded from the pre-NFKD fold in
+ * `normalizeForDetection` so NFKD gets first say for width variants;
+ * the ordinary post-NFKD `foldConfusables` pass still runs as a
+ * safety net for anything this narrower pass didn't touch.
+ */
+const FULLWIDTH_FORMS = /[＀-￯]/;
+function foldConfusablesPreNfkd(text: string): string {
+  return text.replace(CONFUSABLE_CHARS, (ch) =>
+    FULLWIDTH_FORMS.test(ch) ? ch : (CONFUSABLES_TO_ASCII.get(ch) ?? ch)
+  );
+}
+
+/**
+ * Detection-path folding: strip invisibles, fold confusables to ASCII
+ * BEFORE and AFTER NFKD (see `foldConfusablesPreNfkd` / `foldConfusables`
+ * for why both passes exist), strip diacritics/modifier letters, then
+ * map Cyrillic/Greek homoglyphs. Split out of `normalizeForDetection`
+ * (steps 1b-4c) to keep that function's own body short.
+ */
+function foldForDetection(input: string): string {
+  // Strip invisibles (BMP + Plane 14 + VS Supplement) — same char
+  // classes `normalizeForOutput` uses, done explicitly here so we can
+  // fold confusables BEFORE NFKD next.
+  let result = input.replace(INVISIBLE_CHARS, "").replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+  result = foldConfusablesPreNfkd(result);
+  result = result.normalize("NFKD");
+  result = result.replace(DIACRITICAL_MARKS, "").replace(MODIFIER_LETTERS, "");
+  result = result.replace(HOMOGLYPH_RANGE, (ch) => HOMOGLYPH_MAP[ch] ?? ch);
+  return foldConfusables(result); // safety net — see foldConfusablesPreNfkd doc
+}
 
 /**
  * Non-lossy output normalization — safe for returning to callers.
@@ -509,21 +584,23 @@ function normalizeForOutput(input: string): string {
  * Step 10:    Append reversed normalized text (append)
  */
 /**
- * Compute the suspicious-homoglyph signal: the text mixes Latin letters
- * with Cyrillic/Greek characters that are ALL Latin look-alikes (≥2
- * confusables from HOMOGLYPH_MAP and no other Cyrillic/Greek letters).
- * Genuine Russian/Greek text contains non-confusable letters and never
- * trips this; a Latin text salted with "і"/"о"/"е" does.
+ * Compute the suspicious-homoglyph signal: a single whitespace-delimited
+ * token mixes ASCII letters with confusable characters from the full
+ * confusables table (≥2 such characters, across any script the table
+ * covers — not just Cyrillic/Greek). Pure-script prose (e.g. genuine
+ * Russian or Greek) never puts a confusable next to an ASCII letter in
+ * the same token, so it never trips this; a Latin word salted with
+ * "і"/"о"/"е" does.
  */
 function hasSuspiciousHomoglyphs(input: string): boolean {
-  const cyrillicGreek = input.match(CYRILLIC_GREEK);
-  if (!cyrillicGreek) return false;
-  let confusables = 0;
-  for (const ch of cyrillicGreek) {
-    if (HOMOGLYPH_MAP[ch] === undefined) return false; // genuine script
-    confusables++;
+  let mixedConfusables = 0;
+  for (const token of input.split(/\s+/)) {
+    if (!/[A-Za-z]/.test(token)) continue; // no ASCII letters — can't be mixed
+    for (const ch of token) {
+      if (CONFUSABLES_TO_ASCII.has(ch)) mixedConfusables++;
+    }
   }
-  return confusables >= HOMOGLYPH_SIGNAL_THRESHOLD && /[A-Za-z]/.test(input);
+  return mixedConfusables >= HOMOGLYPH_SIGNAL_THRESHOLD;
 }
 
 interface DetectionNormalization {
@@ -578,21 +655,30 @@ function normalizeForDetection(
     return match;
   });
 
-  // Steps 1b-4: Strip invisibles (BMP + Plane 14 + VS Supplement), NFKD,
-  // strip diacritics, map Cyrillic/Greek homoglyphs to Latin. This is the
-  // same conservative normalization used by `normalizeForOutput` on the
-  // clean path — detection and output must see the same Latin form.
-  //
-  // INVISIBLE_CHARS is a non-`u` regex covering BMP invisibles;
-  // INVISIBLE_CHARS_SUPPLEMENTARY is a `u`-flagged regex covering
-  // U+E0000–U+E007F (Tag block — steganographic ASCII smuggling) and
-  // U+E0100–U+E01EF (Variation Selector Supplement).
-  let result = normalizeForOutput(input);
+  // Steps 1b-4c: strip invisibles, fold confusables before/after NFKD,
+  // strip diacritics/modifier letters, map Cyrillic/Greek homoglyphs —
+  // see `foldForDetection` for the full step-by-step rationale.
+  let result = foldForDetection(input);
 
-  // Step 5: URL-decode %XX sequences
-  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) =>
-    String.fromCharCode(parseInt(hex, 16))
-  );
+  // Step 5: URL-decode %XX sequences iteratively (handles double-encoding
+  // like "%2569" -> "%69" -> "i"), capped at MAX_URL_DECODE_PASSES so
+  // adversarial input can't force unbounded looping. decodeURIComponent
+  // understands multi-byte UTF-8 percent sequences correctly but throws
+  // on a malformed one (e.g. a literal "%" in prose, or an incomplete
+  // continuation byte) — when it does, fall back to the byte-safe
+  // per-pair substitution this step used before, which never throws.
+  for (let pass = 0; pass < MAX_URL_DECODE_PASSES && PERCENT_ENCODED.test(result); pass++) {
+    let decodedPass: string;
+    try {
+      decodedPass = decodeURIComponent(result);
+    } catch {
+      decodedPass = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) =>
+        String.fromCharCode(parseInt(hex, 16))
+      );
+    }
+    if (decodedPass === result) break; // no change — stop early
+    result = decodedPass;
+  }
 
   // Step 6: Collapse character-splitting separators
   // Matches sequences like "i.g.n.o.r.e" or "1.g.n.0.r.3" (single alphanumeric chars
@@ -619,18 +705,27 @@ function normalizeForDetection(
   // Save pre-leetspeak text (needed for patterns that use digit ranges)
   const preLeetspeak = result;
 
-  // Step 8: Leetspeak normalization. Character class matches only
-  // characters that have entries in LEET_MAP (see patterns.ts).
-  result = result.replace(
-    /[013457@$]/g,
-    (ch) => LEET_MAP[ch] ?? ch
+  // Step 8: Leetspeak normalization, scoped to alphanumeric runs (see
+  // LEET_TOKEN) that contain an ASCII letter, so a purely numeric run
+  // ("100", "2024", "$5") is left alone instead of being corrupted by
+  // the digit->letter substitution.
+  result = result.replace(LEET_TOKEN, (run) =>
+    /[A-Za-z]/.test(run) ? run.replace(/[013457@$]/g, (ch) => LEET_MAP[ch] ?? ch) : run
   );
+
+  // Step 8b: Unconditional leet decode of the pre-leet text (the
+  // pre-token-aware behavior), kept ONLY as an extra detection-string
+  // segment below — never the in-place result — so a fully-digit short
+  // word with no surviving letter ("4" -> "a", "70" -> "to") still
+  // recovers, without letting a token-unaware pass corrupt literal
+  // numbers in the in-place text that excise/neutralize return.
+  const leetAll = preLeetspeak.replace(/[013457@$]/g, (ch) => LEET_MAP[ch] ?? ch);
 
   // Save the in-place normalized result
   const normalizedInPlace = result;
 
   // Append pre-leetspeak text so digit-dependent patterns still match
-  result += " " + preLeetspeak;
+  result += " " + preLeetspeak + " " + leetAll;
 
   // Step 9: Append Base64-decoded content
   for (const decoded of decodedSegments) {
