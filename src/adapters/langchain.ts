@@ -66,13 +66,17 @@ export function guardTool<T extends InvokableTool>(
       }
 
       const output = await tool.invoke(input, config);
-      if (!wrapOutput || typeof output !== "string") return output;
+      if (!wrapOutput) return output;
 
-      const scan = scanOutput(output);
+      // Structured results are scanned via their JSON text so an exfil URL
+      // inside an object is still caught; only string results are re-wrapped,
+      // since wrapping would change a structured result's type.
+      const scan = scanOutput(toText(output));
       if (isOutputUnsafe(scan)) {
         options.onDetect?.(scan, { input });
         if (mode === "block") throw new GuardBlockedError(scan);
       }
+      if (typeof output !== "string") return output;
       return wrapToolResult(output, { sourceName: tool.name ?? "langchain_tool" }).wrapped;
     },
   } as T;
