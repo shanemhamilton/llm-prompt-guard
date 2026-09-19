@@ -11,6 +11,22 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.2.1](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.2.0...v2.2.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **bugsweep:** BUG-A1 scan tool definitions against normalized text ([2545e64](https://github.com/shanemhamilton/llm-prompt-guard/commit/2545e64e4b0c8b7123172e3212020f82dc449a05))
+* **bugsweep:** BUG-A2 assess every user message in the Vercel AI adapter ([dd45b95](https://github.com/shanemhamilton/llm-prompt-guard/commit/dd45b951f0761a816fbc2f64d0ab4eaa4e94cd40))
+* **bugsweep:** BUG-A5 scan structured tool results in the LangChain adapter ([523f291](https://github.com/shanemhamilton/llm-prompt-guard/commit/523f2919171de6fcc0c1d1ac2c88a8589736ac18))
+* **bugsweep:** BUG-C1 make normalizeHtml linear in nesting depth ([eddc6bc](https://github.com/shanemhamilton/llm-prompt-guard/commit/eddc6bc5da28afd8ed1a1d4194af01136d08da40))
+* **bugsweep:** BUG-C2 surface non-hidden &lt;input value&gt; text in normalizeHtml ([df8c145](https://github.com/shanemhamilton/llm-prompt-guard/commit/df8c1454deb9c698cbce01acc741c083f22ac44c))
+* **bugsweep:** BUG-C3 skip low-severity builtin patterns in tool scans ([ee1dd0f](https://github.com/shanemhamilton/llm-prompt-guard/commit/ee1dd0f9bcc6337ca00ed18f2d724e257da112e6))
+* **bugsweep:** BUG-E1 keep bare string MCP tool results as strings ([a2f51d8](https://github.com/shanemhamilton/llm-prompt-guard/commit/a2f51d84e069c1e2afeff5b027f6ba601f2be129))
+* **bugsweep:** BUG-E2 guard non-string body fields in express and hono adapters ([179379f](https://github.com/shanemhamilton/llm-prompt-guard/commit/179379f8147eea7e938f1d7de4e80dd57ff82cf9))
+* **bugsweep:** BUG-E5 apply the selected profile in the playground ([6fac1e5](https://github.com/shanemhamilton/llm-prompt-guard/commit/6fac1e5eb0c0f6f09d141a020592e8591ff358f6))
+* harden adapters, tool scanning, and the html normalizer ([1cfa431](https://github.com/shanemhamilton/llm-prompt-guard/commit/1cfa431719890cf03389fe8d4e9b7307b9b6a131))
+
 ## [2.2.0](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.1.4...v2.2.0) (2026-09-11)
 
 
