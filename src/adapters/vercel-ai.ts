@@ -1,6 +1,6 @@
 /**
  * Vercel AI SDK adapter — a `LanguageModelV1Middleware`/`LanguageModelV2Middleware`
- * that assesses the latest user message before it reaches the model.
+ * that assesses every user message in the prompt before it reaches the model.
  *
  * Structural types only (no `import("ai")`): this library stays zero-dependency,
  * and the AI SDK's middleware shape (`transformParams({ params })`) is small
@@ -44,17 +44,26 @@ function extractText(content: MessageContent): string {
     .join("\n");
 }
 
-function latestUserText(prompt: ReadonlyArray<PromptMessage>): string {
+/**
+ * Every user-role message, latest first. The prompt history is supplied by
+ * the client, so an earlier turn is as attacker-controlled as the latest
+ * one — assessing only the last message let a forged earlier turn through.
+ */
+function userTexts(prompt: ReadonlyArray<PromptMessage>): string[] {
+  const texts: string[] = [];
   for (let i = prompt.length - 1; i >= 0; i--) {
-    if (prompt[i].role === "user") return extractText(prompt[i].content);
+    if (prompt[i].role === "user") {
+      const text = extractText(prompt[i].content);
+      if (text) texts.push(text);
+    }
   }
-  return "";
+  return texts;
 }
 
 // ── Public API ────────────────────────────────────────────────────────
 
 /**
- * Build AI-SDK middleware that guards the latest user message.
+ * Build AI-SDK middleware that guards every user message in the prompt.
  *
  * Stream wrapping (`wrapGenerate`/`wrapStream`) is deliberately not
  * implemented — `transformParams` alone covers input-side guarding.
@@ -78,14 +87,13 @@ export function guardMiddleware(
 
   return {
     async transformParams({ params }) {
-      const text = latestUserText(params.prompt);
-      if (!text) return params;
+      for (const text of userTexts(params.prompt)) {
+        const result = guard.assess(text);
+        if (!isDetected(result)) continue;
 
-      const result = guard.assess(text);
-      if (!isDetected(result)) return params;
-
-      options.onDetect?.(result, { params });
-      if (mode === "block") throw new GuardBlockedError(result);
+        options.onDetect?.(result, { params });
+        if (mode === "block") throw new GuardBlockedError(result);
+      }
       return params;
     },
   };
