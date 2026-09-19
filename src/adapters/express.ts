@@ -42,9 +42,13 @@ export function guardExpress(options: ExpressGuardOptions = {}) {
 
   return (req: ExpressRequest, res: ExpressResponse, next: ExpressNext): void => {
     const value = req.body?.[field];
-    if (typeof value !== "string") return next();
+    if (value === undefined || value === null) return next();
+    // The body is attacker-controlled JSON: a payload wrapped in an array or
+    // object must still be assessed, not waved through. Stringify like the
+    // LangChain adapter does for non-string input.
+    const text = typeof value === "string" ? value : JSON.stringify(value);
 
-    const result = guard.assess(value);
+    const result = guard.assess(text);
     if (!isDetected(result)) return next();
 
     options.onDetect?.(result, { req });

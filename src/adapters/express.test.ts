@@ -65,6 +65,17 @@ describe("guardExpress", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  test("block mode rejects an injection wrapped in an array (non-string field is still guarded)", () => {
+    const middleware = guardExpress({ mode: "block" });
+    const req: ExpressRequest = { body: { prompt: [INJECTION] } };
+    const res = fakeRes();
+    const next = jest.fn();
+
+    middleware(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+  });
+
   test("non-string field value calls next() without throwing", () => {
     const middleware = guardExpress({ mode: "block" });
     const req: ExpressRequest = { body: { prompt: 12345 } };

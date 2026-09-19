@@ -65,6 +65,16 @@ describe("guardHono", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  test("block mode rejects an injection wrapped in an array (non-string field is still guarded)", async () => {
+    const middleware = guardHono({ mode: "block" });
+    const { c } = fakeContext({ prompt: [INJECTION] });
+    const next = jest.fn().mockResolvedValue(undefined);
+
+    await middleware(c, next);
+    expect(c.json).toHaveBeenCalledWith(expect.objectContaining({ error: "prompt_rejected" }), 400);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   test("missing field calls next() without assessing anything", async () => {
     const middleware = guardHono({ mode: "block" });
     const { c } = fakeContext({});
