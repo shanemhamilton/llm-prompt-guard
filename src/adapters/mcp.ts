@@ -119,6 +119,9 @@ export function guardMcpClient<T extends McpClient>(client: T, options: McpGuard
       const text = toolResultText(result);
       if (text === undefined) return result;
       const quarantined = quarantineToolResult(guard, text, "mcp_tool");
+      // toolResultText accepts a bare string; spreading one into an object
+      // literal would turn it into indexed characters, so hand it back as-is.
+      if (typeof result === "string") return quarantined;
       return { ...(result as object), content: [{ type: "text", text: quarantined }] };
     };
   }

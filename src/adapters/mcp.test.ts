@@ -82,6 +82,17 @@ describe("guardMcpClient — callTool", () => {
     expect(result.content[0].text).not.toBe("raw result");
   });
 
+  test("a bare string tool result stays a string after quarantine", async () => {
+    const client: McpClient = {
+      listTools: jest.fn().mockResolvedValue({ tools: [] }),
+      callTool: jest.fn().mockResolvedValue("raw result"),
+    };
+    const guarded = guardMcpClient(client);
+    const result = await guarded.callTool!("search", {});
+    expect(typeof result).toBe("string");
+    expect(result).toContain("raw result");
+  });
+
   test("does not add callTool when the underlying client has none", () => {
     const client: McpClient = { listTools: jest.fn().mockResolvedValue({ tools: [] }) };
     const guarded = guardMcpClient(client);
