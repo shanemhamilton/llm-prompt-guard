@@ -135,11 +135,16 @@ function render() {
     }
   }
 
+  // The profile select only takes effect through createGuard({ profile });
+  // the standalone assess()/sanitize() exports always use the default profile.
+  const profile = els.profileSelect.value;
+  const guard = Guard.createGuard && profile ? Guard.createGuard({ profile }) : Guard;
+
   const normalized = Guard.normalizeInput(text);
   els.normalizeOutput.innerHTML = diffHighlight(text, normalized.text) || "&nbsp;";
   signalChips(els.normalizeSignals, normalized.signals);
 
-  const assessed = Guard.assess(text);
+  const assessed = guard.assess(text);
   const pct = Math.round(Math.min(1, assessed.score) * 100);
   els.scoreBarFill.style.width = pct + "%";
   els.scoreBarFill.style.background = scoreColor(assessed.score);
@@ -147,7 +152,7 @@ function render() {
   els.reasons.innerHTML = assessed.reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("");
   signalChips(els.assessSignals, assessed.signals);
 
-  const sanitized = Guard.sanitize(text, { maxLength: 5000, mode: "neutralize" });
+  const sanitized = guard.sanitize(text, { maxLength: 5000, mode: "neutralize" });
   els.sanitizeOutput.textContent = sanitized.sanitized;
   els.sanitizeMeta.innerHTML = "";
   for (const [label, value] of [
