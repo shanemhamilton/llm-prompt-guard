@@ -165,15 +165,25 @@ interface Frame {
 /** Mutable scan accumulator threaded through the token loop (keeps helpers to ≤3 params). */
 interface ScanState {
   stack: Frame[];
+  /** Count of frames on `stack` with isSkip / isHidden — kept in sync on
+   * push and pop so context checks are O(1) instead of a stack scan per
+   * token (which made deeply nested documents quadratic). */
+  skipDepth: number;
+  hiddenDepth: number;
+  /** Open-frame count per tag name, so an unmatched closing tag is rejected
+   * in O(1) instead of scanning the whole stack. */
+  openCounts: Map<string, number>;
   visible: string[];
   hidden: string[];
   comments: number;
   hiddenElements: number;
 }
 
-const isSkipped = (s: ScanState): boolean => s.stack.some((f) => f.isSkip);
-const isHiddenCtx = (s: ScanState): boolean => s.stack.some((f) => f.isHidden);
-function findFrameIndex(stack: Frame[], name: string): number {
+const isSkipped = (s: ScanState): boolean => s.skipDepth > 0;
+const isHiddenCtx = (s: ScanState): boolean => s.hiddenDepth > 0;
+function findFrameIndex(state: ScanState, name: string): number {
+  if (!state.openCounts.get(name)) return -1;
+  const { stack } = state;
   for (let i = stack.length - 1; i >= 0; i--) {
     if (stack[i].name === name) return i;
   }
@@ -210,13 +220,22 @@ function handleOpenTag(state: ScanState, tag: OpenTag): void {
 
   if (isVoid) return; // no matching close tag — nothing to push
   state.stack.push({ name: tag.name, isHidden: elementHidden, isSkip: isDrop });
+  if (isDrop) state.skipDepth++;
+  if (elementHidden) state.hiddenDepth++;
+  state.openCounts.set(tag.name, (state.openCounts.get(tag.name) ?? 0) + 1);
 }
 
 function handleCloseTag(state: ScanState, name: string): void {
-  const idx = findFrameIndex(state.stack, name);
+  const idx = findFrameIndex(state, name);
   if (idx === -1) return; // mismatched closing tag — tolerate malformed HTML
 
   pushBlockNewline(state, name, false);
+  for (let i = state.stack.length - 1; i >= idx; i--) {
+    const frame = state.stack[i];
+    if (frame.isSkip) state.skipDepth--;
+    if (frame.isHidden) state.hiddenDepth--;
+    state.openCounts.set(frame.name, (state.openCounts.get(frame.name) ?? 1) - 1);
+  }
   state.stack.length = idx; // pop this frame and any unbalanced descendants above it
 }
 
@@ -263,7 +282,16 @@ export function normalizeHtml(html: string): HtmlNormalizeResult {
     };
   }
 
-  const state: ScanState = { stack: [], visible: [], hidden: [], comments: 0, hiddenElements: 0 };
+  const state: ScanState = {
+    stack: [],
+    skipDepth: 0,
+    hiddenDepth: 0,
+    openCounts: new Map(),
+    visible: [],
+    hidden: [],
+    comments: 0,
+    hiddenElements: 0,
+  };
 
   TOKEN_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
