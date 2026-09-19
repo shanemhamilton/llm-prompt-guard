@@ -13,7 +13,7 @@ import {
   CREDENTIAL_PATTERNS,
   SHADOWING_PATTERNS,
 } from "./patterns/tool-poisoning";
-import { assess, sanitize } from "./guard";
+import { assess, normalizeForDetection, sanitize } from "./guard";
 
 /**
  * Agentic-surface defenses: MCP tool-definition scanning, rug-pull
@@ -82,33 +82,39 @@ function collectStrings(
 // ── Tool-definition scanning ─────────────────────────────────────────
 
 function matchPatterns(
-  text: string,
+  texts: readonly string[],
   patterns: InjectionPattern[],
   type: ToolScanFinding["type"],
   location: string,
   detail: string,
   out: ToolScanFinding[]
 ): void {
-  for (const { pattern, severity } of patterns) {
-    const match = pattern.exec(text);
-    if (match) {
-      out.push({
-        type,
-        severity,
-        location,
-        detail,
-        preview: match[0].slice(0, PREVIEW_LENGTH),
-      });
-      return; // one finding per type per location keeps reports readable
+  for (const text of texts) {
+    for (const { pattern, severity } of patterns) {
+      const match = pattern.exec(text);
+      if (match) {
+        out.push({
+          type,
+          severity,
+          location,
+          detail,
+          preview: match[0].slice(0, PREVIEW_LENGTH),
+        });
+        return; // one finding per type per location keeps reports readable
+      }
     }
   }
 }
 
 function scanText(text: string, location: string): ToolScanFinding[] {
   const findings: ToolScanFinding[] = [];
+  // Match the raw text first (accurate previews), then the same
+  // leet/homoglyph/base64-normalized form the guard's own detection uses,
+  // so an obfuscated definition cannot slip past the tool-poisoning rules.
+  const texts = [text, normalizeForDetection(text).detection];
 
   matchPatterns(
-    text,
+    texts,
     CONCEALMENT_PATTERNS,
     "concealment-instruction",
     location,
@@ -116,7 +122,7 @@ function scanText(text: string, location: string): ToolScanFinding[] {
     findings
   );
   matchPatterns(
-    text,
+    texts,
     CREDENTIAL_PATTERNS,
     "credential-access",
     location,
@@ -124,7 +130,7 @@ function scanText(text: string, location: string): ToolScanFinding[] {
     findings
   );
   matchPatterns(
-    text,
+    texts,
     SHADOWING_PATTERNS,
     "tool-shadowing",
     location,
@@ -132,7 +138,7 @@ function scanText(text: string, location: string): ToolScanFinding[] {
     findings
   );
   matchPatterns(
-    text,
+    texts,
     BUILTIN_PATTERNS,
     "injection-pattern",
     location,
