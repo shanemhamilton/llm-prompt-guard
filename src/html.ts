@@ -196,10 +196,17 @@ function pushBlockNewline(state: ScanState, name: string, extraHidden: boolean):
 }
 
 function handleHiddenInput(state: ScanState, attrsStr: string): void {
-  if (extractAttr(ATTR_TYPE, attrsStr)?.toLowerCase() !== "hidden") return;
-  state.hiddenElements++;
+  const isHiddenType = extractAttr(ATTR_TYPE, attrsStr)?.toLowerCase() === "hidden";
+  if (isHiddenType) state.hiddenElements++;
   if (isSkipped(state)) return;
-  state.hidden.push(decodeEntities(extractAttr(ATTR_VALUE, attrsStr) ?? ""));
+  const value = decodeEntities(extractAttr(ATTR_VALUE, attrsStr) ?? "");
+  if (isHiddenType || isHiddenCtx(state)) {
+    state.hidden.push(value);
+    return;
+  }
+  // A prefilled value is text the user sees; dropping it let an injection
+  // in an ordinary <input value> bypass the scanner entirely.
+  if (value) state.visible.push(value);
 }
 
 interface OpenTag {
