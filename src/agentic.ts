@@ -43,6 +43,8 @@ const DEFAULT_TOOL_RESULT_MAX_LENGTH = 8000;
 /** Bounds traversal of hostile/cyclic schemas. */
 const MAX_SCHEMA_DEPTH = 12;
 const MAX_SCHEMA_STRINGS = 500;
+/** Low severity is an assess()-only signal (see `Severity`); every other surface ignores it. */
+const DETECTABLE_BUILTIN_PATTERNS = BUILTIN_PATTERNS.filter((p) => p.severity !== "low");
 
 // ── Schema traversal ─────────────────────────────────────────────────
 
@@ -139,7 +141,7 @@ function scanText(text: string, location: string): ToolScanFinding[] {
   );
   matchPatterns(
     texts,
-    BUILTIN_PATTERNS,
+    DETECTABLE_BUILTIN_PATTERNS,
     "injection-pattern",
     location,
     "Tool definition contains a known prompt-injection pattern",
