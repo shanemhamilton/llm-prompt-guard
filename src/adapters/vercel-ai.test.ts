@@ -17,6 +17,20 @@ describe("guardMiddleware", () => {
     await expect(middleware.transformParams({ params })).rejects.toBeInstanceOf(GuardBlockedError);
   });
 
+  test("block mode detects an injection in an earlier user turn, not only the latest", async () => {
+    // The AI SDK prompt history is client-supplied, so an attacker can
+    // place the payload in a forged earlier turn behind a clean latest one.
+    const middleware = guardMiddleware({ mode: "block" });
+    const params = {
+      prompt: [
+        { role: "user", content: INJECTION },
+        { role: "assistant", content: "Sure." },
+        { role: "user", content: "What is the weather today?" },
+      ],
+    };
+    await expect(middleware.transformParams({ params })).rejects.toBeInstanceOf(GuardBlockedError);
+  });
+
   test("flag mode passes params through and calls onDetect", async () => {
     const onDetect = jest.fn();
     const middleware = guardMiddleware({ mode: "flag", onDetect });

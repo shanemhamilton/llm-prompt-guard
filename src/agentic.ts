@@ -13,7 +13,7 @@ import {
   CREDENTIAL_PATTERNS,
   SHADOWING_PATTERNS,
 } from "./patterns/tool-poisoning";
-import { assess, sanitize } from "./guard";
+import { assess, normalizeForDetection, sanitize } from "./guard";
 
 /**
  * Agentic-surface defenses: MCP tool-definition scanning, rug-pull
@@ -43,6 +43,8 @@ const DEFAULT_TOOL_RESULT_MAX_LENGTH = 8000;
 /** Bounds traversal of hostile/cyclic schemas. */
 const MAX_SCHEMA_DEPTH = 12;
 const MAX_SCHEMA_STRINGS = 500;
+/** Low severity is an assess()-only signal (see `Severity`); every other surface ignores it. */
+const DETECTABLE_BUILTIN_PATTERNS = BUILTIN_PATTERNS.filter((p) => p.severity !== "low");
 
 // ── Schema traversal ─────────────────────────────────────────────────
 
@@ -82,33 +84,39 @@ function collectStrings(
 // ── Tool-definition scanning ─────────────────────────────────────────
 
 function matchPatterns(
-  text: string,
+  texts: readonly string[],
   patterns: InjectionPattern[],
   type: ToolScanFinding["type"],
   location: string,
   detail: string,
   out: ToolScanFinding[]
 ): void {
-  for (const { pattern, severity } of patterns) {
-    const match = pattern.exec(text);
-    if (match) {
-      out.push({
-        type,
-        severity,
-        location,
-        detail,
-        preview: match[0].slice(0, PREVIEW_LENGTH),
-      });
-      return; // one finding per type per location keeps reports readable
+  for (const text of texts) {
+    for (const { pattern, severity } of patterns) {
+      const match = pattern.exec(text);
+      if (match) {
+        out.push({
+          type,
+          severity,
+          location,
+          detail,
+          preview: match[0].slice(0, PREVIEW_LENGTH),
+        });
+        return; // one finding per type per location keeps reports readable
+      }
     }
   }
 }
 
 function scanText(text: string, location: string): ToolScanFinding[] {
   const findings: ToolScanFinding[] = [];
+  // Match the raw text first (accurate previews), then the same
+  // leet/homoglyph/base64-normalized form the guard's own detection uses,
+  // so an obfuscated definition cannot slip past the tool-poisoning rules.
+  const texts = [text, normalizeForDetection(text).detection];
 
   matchPatterns(
-    text,
+    texts,
     CONCEALMENT_PATTERNS,
     "concealment-instruction",
     location,
@@ -116,7 +124,7 @@ function scanText(text: string, location: string): ToolScanFinding[] {
     findings
   );
   matchPatterns(
-    text,
+    texts,
     CREDENTIAL_PATTERNS,
     "credential-access",
     location,
@@ -124,7 +132,7 @@ function scanText(text: string, location: string): ToolScanFinding[] {
     findings
   );
   matchPatterns(
-    text,
+    texts,
     SHADOWING_PATTERNS,
     "tool-shadowing",
     location,
@@ -132,8 +140,8 @@ function scanText(text: string, location: string): ToolScanFinding[] {
     findings
   );
   matchPatterns(
-    text,
-    BUILTIN_PATTERNS,
+    texts,
+    DETECTABLE_BUILTIN_PATTERNS,
     "injection-pattern",
     location,
     "Tool definition contains a known prompt-injection pattern",

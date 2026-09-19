@@ -588,7 +588,7 @@ interface DetectionNormalization {
  * are truncated for this pipeline and flagged via
  * `signals.truncatedForAnalysis`.
  */
-function normalizeForDetection(
+export function normalizeForDetection(
   rawInput: string,
   maxAnalyzedLength: number = DEFAULT_MAX_ANALYZED_LENGTH
 ): DetectionNormalization {
