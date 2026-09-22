@@ -38,10 +38,10 @@ re-run in under a second.
   canary probe embeds a token from `generateCanary()` so the validator
   has something to match against. The harness reports the flagged count
   and separately verifies the canary-leak path.
-- **`scanOutput()` coverage** — if the guard exposes `scanOutput()`, a
-  handful of exfiltration-shape probes (outbound URL, markdown image
-  with query, data URL, hex blob) are scanned and the flagged count is
-  reported. When the method is not present in the current build the
+- **`scanOutput()` coverage** — if the guard exposes `scanOutput()`, five
+  exfiltration-shape probes (outbound URL, markdown image with query,
+  data URL, base64 blob, hex blob) and one clean response are checked for
+  their expected result. When the method is not present in the current build the
   section is skipped cleanly — this is deliberate, since `scanOutput`
   landed as part of v2.0 reconciliation and older builds will not have
   it.
@@ -184,8 +184,9 @@ Both commands:
    five sanitization modes; assert no crashes and valid result shape.
 6. Run 15 curated bad outputs through `guard.validateOutput()` and
    report the flagged count; separately verify the canary-leak path.
-7. If `guard.scanOutput()` is present, run a few exfil-shape probes and
-   report the flagged count. Skip cleanly if the method is missing.
+7. If `guard.scanOutput()` is present, verify five exfil-shape probes flag
+   with their expected type and one clean response remains safe. Skip
+   cleanly if the method is missing.
 8. Print a human-readable report to stdout.
 9. Overwrite `benchmarks/RESULTS.md` with the machine-readable version.
 10. Exit `1` if the FPR exceeds 2% on the benign corpus **or** any

@@ -32,6 +32,8 @@ ROWS_PATH = HERE / "heldout_rows.filtered.json"
 RESULTS_PATH = HERE / "HELDOUT_RESULTS.md"
 MARKER = "<!-- COMPARISON_PLACEHOLDER -->"
 MODEL_ID = "protectai/deberta-v3-base-prompt-injection-v2"
+MAX_CHUNK_CHARS = 2_000
+CHUNK_OVERLAP_CHARS = 200
 
 
 def get_cpu_brand() -> str:
@@ -50,11 +52,19 @@ def percentile(sorted_vals, p):
     return sorted_vals[idx]
 
 
+def text_chunks(text: str) -> list[str]:
+    """Cover a long BIPIA row without dropping an injection appended at its end."""
+    step = MAX_CHUNK_CHARS - CHUNK_OVERLAP_CHARS
+    return [text[start : start + MAX_CHUNK_CHARS] for start in range(0, len(text), step)]
+
+
 def main() -> None:
-    from transformers import pipeline
+    import torch
+    from transformers import __version__ as transformers_version, pipeline
 
     rows = json.loads(ROWS_PATH.read_text())
     clf = pipeline("text-classification", model=MODEL_ID, truncation=True)
+    model_revision = getattr(clf.model.config, "_commit_hash", None) or "unknown"
 
     # Warmup (matches run.ts's warmup convention).
     for i in range(20):
@@ -62,12 +72,20 @@ def main() -> None:
 
     tp = fp = tn = fn = 0
     latencies_us = []
+    chunk_count = 0
+    max_chunks_per_row = 0
 
     for row in rows:
         t0 = time.perf_counter()
-        result = clf(row["text"][:2000])[0]  # model has a token limit; cap chars
+        chunks = text_chunks(row["text"])
+        chunk_count += len(chunks)
+        max_chunks_per_row = max(max_chunks_per_row, len(chunks))
+        is_injection = False
+        for chunk in chunks:
+            result = clf(chunk)[0]
+            if result["label"].upper() in ("INJECTION", "LABEL_1", "UNSAFE"):
+                is_injection = True
         latencies_us.append((time.perf_counter() - t0) * 1_000_000)
-        is_injection = result["label"].upper() in ("INJECTION", "LABEL_1", "UNSAFE")
 
         if row["label"] == 1:
             if is_injection:
@@ -103,6 +121,12 @@ directly comparable to the row below.
 
 - **CPU:** `{get_cpu_brand()}`
 - **Rows scored:** {len(rows)}
+- **Input processing:** full text scored in `{MAX_CHUNK_CHARS}`-character chunks
+  with `{CHUNK_OVERLAP_CHARS}` characters of overlap ({chunk_count} chunks;
+  maximum {max_chunks_per_row} per row).
+- **Model revision:** `{model_revision}`
+- **Runtime:** `Python {platform.python_version()} / torch {torch.__version__} /
+  transformers {transformers_version}`
 
 | Metric | Value |
 | --- | --- |
