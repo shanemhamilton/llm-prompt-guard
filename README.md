@@ -604,8 +604,10 @@ still disable additional categories of your own.
 
 ## Benchmarks
 
-Two reproducible, zero-network harnesses at
-[`benchmarks/`](./benchmarks/README.md), both regression-gated in CI.
+Two reproducible, zero-network tuning harnesses at
+[`benchmarks/`](./benchmarks/README.md) are regression-gated in CI. The
+separate held-out BIPIA evaluation is intentionally excluded from normal CI
+to preserve its role as a release-time measurement.
 
 **Public dataset** — [deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections)
 (662 labeled rows, EN+DE, Apache-2.0, vendored). Full report:
@@ -613,8 +615,8 @@ Two reproducible, zero-network harnesses at
 
 | Configuration | Precision | Recall | FPR | p50 latency |
 | --- | ---: | ---: | ---: | ---: |
-| core | 100% | 9.1% | 0.00% | ~10µs |
-| core + multilingual | 100% | 11.0% | 0.00% | ~14µs |
+| core | 100% | 9.1% | 0.00% | ~21µs |
+| core + multilingual | 100% | 11.0% | 0.00% | ~27µs |
 
 Read the recall number the way it is published: this corpus is dominated
 by task-drift attacks with no injection vocabulary ("stop, I urgently
@@ -678,10 +680,14 @@ corpora (`corpora/attacks.json`, `corpora/deepset-prompt-injections.json`).
 
 | Metric | This library | protectai/deberta-v3-base-prompt-injection-v2 |
 | --- | ---: | ---: |
-| Recall | 0.0% | 18.5% |
-| Precision | n/a (no true positives) | 52.1% |
-| FPR | 0.00% | 17.0% |
-| Median latency | 204 µs | 35.4 ms (174x) |
+| Recall | 0.0% | 21.0% |
+| Precision | n/a (no true positives) | 50.0% |
+| FPR | 0.00% | 21.0% |
+| Median latency | 270 µs | 86.9 ms (322x) |
+
+BIPIA appends attacks to long contexts, so the classifier scores every row
+in overlapping 2,000-character chunks rather than discarding an attack past
+its sequence limit. The full report records the model revision and runtime.
 
 BIPIA's attacks are task-drift instructions with no injection
 vocabulary, the same structural gap the public-dataset recall number

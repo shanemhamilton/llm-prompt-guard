@@ -20,6 +20,7 @@ allowed to shape it.
   scoring. The removed count is printed and written into the results file.
 - **Results are regenerated only at release time**, not on every commit —
   running it more often than that is itself a form of tuning pressure.
+  The normal CI workflow therefore does not run this command.
 - **If it's ever used to tune anyway, it's retired.** The set is replaced
   with a new sample (different seed, or a different upstream dataset), and
   the retirement is noted here with the date and reason.

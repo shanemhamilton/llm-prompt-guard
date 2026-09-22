@@ -49,9 +49,5 @@ jobs:
       - name: Benchmarks (curated + public dataset, regression-gated)
         run: npm run bench && npm run bench:public
 
-      - name: Benchmarks (held-out BIPIA set, report-only)
-        run: npm run bench:heldout
-        continue-on-error: true
-
       - name: Build
         run: npm run build

