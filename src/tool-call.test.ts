@@ -75,6 +75,28 @@ describe("scanToolCall — unapproved-origin", () => {
     expect(finding?.evidence).not.toBe(badUrl);
     expect(finding?.evidence).toMatch(/^.{4}….{2}$/);
   });
+
+  // ── Case-insensitivity / obfuscated separators (OUT-2 regression) ────
+  test("blocks an uppercase-scheme URL", () => {
+    const result = scanToolCall("fetch", { url: "HTTPS://evil.com/?k=abc" });
+    expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
+    expect(result.shouldBlock).toBe(true);
+  });
+
+  test("blocks a protocol-relative URL", () => {
+    const result = scanToolCall("fetch", { url: "//evil.com/collect?data=1" });
+    expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
+  });
+
+  test("blocks a backslash-obfuscated scheme separator", () => {
+    const result = scanToolCall("fetch", { url: "https:\\evil.com" });
+    expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
+  });
+
+  test("does not flag an ordinary code comment as a protocol-relative URL", () => {
+    const result = scanToolCall("do_thing", { payload: "a // comment explaining the code" });
+    expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(false);
+  });
 });
 
 // ── unapproved-recipient ─────────────────────────────────────────────
@@ -120,6 +142,39 @@ describe("scanToolCall — unapproved-recipient", () => {
     const result = scanToolCall(
       "open_url",
       { url: "mailto:attacker@evil.com?subject=data" },
+      { allowedRecipients: ["@mycorp.com"] }
+    );
+    expect(result.findings.some((f) => f.type === "unapproved-recipient")).toBe(true);
+  });
+
+  // ── Domain-boundary and homograph bypasses (OUT-5 regression) ───────
+
+  test("flags a quoted local-part address whose real domain is after the LAST @", () => {
+    // `"ceo@mycorp.com"@evil.com` is a real, deliverable address whose
+    // recipient domain is `evil.com` — reading the domain after the
+    // FIRST `@` (inside the quoted string) misread it as `mycorp.com`
+    // and let it through the `@mycorp.com` allowlist.
+    const result = scanToolCall(
+      "send_email",
+      { to: '"ceo@mycorp.com"@evil.com' },
+      { allowedRecipients: ["@mycorp.com"] }
+    );
+    expect(result.findings.some((f) => f.type === "unapproved-recipient")).toBe(true);
+  });
+
+  test("flags a non-ASCII (homoglyph) domain even though it isn't in the allowlist", () => {
+    const result = scanToolCall(
+      "send_email",
+      { to: "attacker@évil.com" },
+      { allowedRecipients: ["@mycorp.com"] }
+    );
+    expect(result.findings.some((f) => f.type === "unapproved-recipient")).toBe(true);
+  });
+
+  test("flags an IP-literal domain", () => {
+    const result = scanToolCall(
+      "send_email",
+      { to: "attacker@[203.0.113.5]" },
       { allowedRecipients: ["@mycorp.com"] }
     );
     expect(result.findings.some((f) => f.type === "unapproved-recipient")).toBe(true);
@@ -218,9 +273,54 @@ describe("scanToolCall — argument traversal", () => {
       deep = { nested: deep };
     }
     expect(() => scanToolCall("do_thing", deep)).not.toThrow();
+  });
+
+  // ── Depth-cap fail-closed finding (OUT-4 regression) ─────────────────
+  //
+  // Previously, exceeding MAX_ARGS_DEPTH silently stopped traversal and
+  // produced zero findings — a payload nested one level past the cap
+  // scanned clean regardless of what it contained. It must now block.
+  test("flags truncation at the depth cap instead of silently passing", () => {
+    let deep: unknown = "https://evil.com/x";
+    for (let i = 0; i < 50; i++) {
+      deep = { nested: deep };
+    }
     const result = scanToolCall("do_thing", deep);
-    // 50 levels exceeds the depth cap, so the deeply nested URL is never reached.
-    expect(result.findings).toEqual([]);
+    expect(result.findings.some((f) => f.type === "depth-limit-exceeded")).toBe(true);
+    expect(result.shouldBlock).toBe(true);
+  });
+
+  // ── Object keys scanned as leaves (OUT-4 regression) ─────────────────
+  test("flags a URL used as an object key", () => {
+    const result = scanToolCall(
+      "fetch",
+      { headers: { "https://evil.com/?k=abc": "1" } },
+      { allowedOrigins: ["example.com"] }
+    );
+    expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
+  });
+
+  test("flags a secret-shaped string used as an object key", () => {
+    const awsKeyAsKey = "AKIA" + "ABCDEFGHIJKLMNOP";
+    const result = scanToolCall("do_thing", { [awsKeyAsKey]: "value" });
+    expect(result.findings.some((f) => f.type === "secret-in-argument")).toBe(true);
+  });
+
+  // ── Map / Set traversal (OUT-4 regression) ───────────────────────────
+  test("walks Map values and keys", () => {
+    const map = new Map<string, unknown>([["https://evil.com/?k=abc", "1"]]);
+    const result = scanToolCall(
+      "fetch",
+      { headers: map },
+      { allowedOrigins: ["example.com"] }
+    );
+    expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
+  });
+
+  test("walks Set entries", () => {
+    const set = new Set(["https://evil.com/x"]);
+    const result = scanToolCall("do_thing", { urls: set });
+    expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
   });
 
   test("numbers and booleans never produce findings", () => {

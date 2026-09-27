@@ -12,11 +12,12 @@
  *    ASCII alphanumeric character
  *  - the source does NOT already fold to that same ASCII char via NFKD +
  *    strip-marks (that case is redundant with guard.ts's existing NFKD step)
+ *  - uppercase-I look-alikes fold to "i", not confusables.txt's "l"
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const CONFUSABLES_URL = "https://www.unicode.org/Public/security/latest/confusables.txt";
+const CONFUSABLES_URL = "https://www.unicode.org/Public/17.0.0/security/confusables.txt";
 const LICENSE_URL = "https://www.unicode.org/license.txt";
 const OUTPUT_PATH = join(__dirname, "..", "src", "data", "confusables.ts");
 const MAX_FILE_BYTES = 80 * 1024;
@@ -79,6 +80,26 @@ function parseConfusables(text: string): Map<number, string> {
     if (stripToBase(sourceChar) === targetBase) continue; // redundant with NFKD alone
 
     if (!entries.has(sourceCp)) entries.set(sourceCp, targetBase);
+  }
+  return foldUppercaseILookalikes(entries);
+}
+
+/**
+ * confusables.txt skeletons uppercase "I" to "l", so look-alikes such as
+ * Cyrillic "І", Greek "Ι", and Roman numeral "Ⅰ" would fold to "l" and
+ * break "IGNORE". Fold a source to "i" when NFKD gives "I" or its
+ * lowercase form is an "i" look-alike.
+ */
+function foldUppercaseILookalikes(entries: Map<number, string>): Map<number, string> {
+  for (const [cp, target] of entries) {
+    if (target !== "l") continue;
+    const source = String.fromCodePoint(cp);
+    const lower = source.toLowerCase();
+    const lowerCp = lower.codePointAt(0) ?? cp;
+    const isILookalike =
+      stripToBase(source) === "I" ||
+      (lower !== source && (entries.get(lowerCp) === "i" || stripToBase(lower) === "i"));
+    if (isILookalike) entries.set(cp, "i");
   }
   return entries;
 }

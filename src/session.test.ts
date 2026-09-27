@@ -102,6 +102,22 @@ describe("createSession", () => {
     expect(() => createSession({ escalationThreshold: 0 })).toThrow(RangeError);
     expect(() => createSession({ suspicionThreshold: -1 })).toThrow(RangeError);
   });
+
+  it("rejects non-finite thresholds instead of silently disabling escalation (#52)", () => {
+    expect(() => createSession({ escalationThreshold: NaN })).toThrow(RangeError);
+    expect(() => createSession({ escalationThreshold: Infinity })).toThrow(RangeError);
+    expect(() => createSession({ suspicionThreshold: NaN })).toThrow(RangeError);
+    expect(() => createSession({ suspicionThreshold: Infinity })).toThrow(RangeError);
+  });
+
+  it("treats record(null)/record(undefined) as a safe, non-detected turn (#52)", () => {
+    const s = createSession();
+    expect(() => s.record(null as unknown as string)).not.toThrow();
+    const r = s.record(undefined as unknown as string);
+    expect(r.turn.score).toBe(0);
+    expect(r.turn.hasHighSeverity).toBe(false);
+    expect(r.shouldReview).toBe(false);
+  });
 });
 
 describe("guard.createSession", () => {

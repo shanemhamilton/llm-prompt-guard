@@ -22,6 +22,17 @@ export function generateCanary(): string {
   return `CANARY_${hex}`;
 }
 
+/** Lowercased prefix `generateCanary()` uses — shared with the leak check below. */
+const CANARY_PREFIX_LOWER = "canary_";
+/**
+ * Minimum length of a canary's random body before we'll flag it on its
+ * own (without the `CANARY_` prefix). `generateCanary()`'s body is 25
+ * hex characters; this stays comfortably under that so a real bare-body
+ * leak isn't missed, while still being long enough that matching it
+ * isn't just noise.
+ */
+const MIN_BARE_BODY_LENGTH = 16;
+
 function randomHex(length: number): string {
   // A canary is only useful if it's unguessable to a third party, so we
   // refuse to generate one on a runtime without a real CSPRNG. Every
@@ -253,9 +264,24 @@ export function createOutputValidator(
       // path, which is what keeps the two in agreement: the canary is
       // plain ASCII, so normalization cannot disturb a legitimate hit.
       if (canaryTokens.length > 0) {
-        const stripped = normalizeForOutput(output);
+        // Case-insensitive: an LLM asked to "repeat the canary" may
+        // lowercase it in the process, and that's still a leak. We also
+        // check the random body alone (the hex run after `CANARY_`) —
+        // an attacker instructed to omit the recognizable prefix but
+        // repeat "the random-looking part" still leaks a working canary.
+        // Bare-body matching only kicks in once the body is long enough
+        // (`MIN_BARE_BODY_LENGTH`) that a coincidental substring match
+        // in unrelated output is implausible — `generateCanary()`'s
+        // 25-hex-char body clears that bar comfortably.
+        const strippedLower = normalizeForOutput(output).toLowerCase();
         for (const canary of canaryTokens) {
-          if (stripped.includes(canary)) {
+          const canaryLower = canary.toLowerCase();
+          let leaked = strippedLower.includes(canaryLower);
+          if (!leaked && canaryLower.startsWith(CANARY_PREFIX_LOWER)) {
+            const body = canaryLower.slice(CANARY_PREFIX_LOWER.length);
+            leaked = body.length >= MIN_BARE_BODY_LENGTH && strippedLower.includes(body);
+          }
+          if (leaked) {
             flags.push({
               type: "canary_leak",
               severity: "high",
@@ -348,6 +374,19 @@ export function createOutputValidator(
  *   caller's allowlist.
  * - `data-url` — `data:...;base64,` embedded blobs.
  * - `hex-blob` — 64+ hex characters (likely hash or long token).
+ *
+ * `markdown-image-with-query` and `outbound-url` share a URL "opening"
+ * that's deliberately broader than a literal `https?://`: it's
+ * case-insensitive, and also matches protocol-relative URLs
+ * (`//evil.com/...`) and the backslash separator some parsers accept in
+ * place of `//` (`https:\evil.com`) — both are real bypasses of a naive
+ * `://` check. The protocol-relative branch requires a host-like
+ * character immediately after `//` so ordinary text like `a // comment`
+ * never matches.
+ *
+ * Keep patterns linear: `markdown-image-with-query` excludes `?` from the
+ * host/path class so unclosed input has one way to split, and bounds both
+ * classes so each unclosed `![` costs O(1), not a rescan to end of text.
  */
 const EXFIL_PATTERNS: Array<{
   type: ExfilFinding["type"];
@@ -356,14 +395,17 @@ const EXFIL_PATTERNS: Array<{
   { type: "base64-blob", pattern: /[A-Za-z0-9+/]{120,}={0,2}/g },
   {
     type: "markdown-image-with-query",
-    pattern: /!\[.*?\]\(https?:\/\/[^)]+\?[^)]+\)/g,
+    pattern: /!\[[^\]]*\]\((?:https?:(?:\/\/|\\+)|\/\/(?=[A-Za-z0-9]))[^\s)?]{1,2048}\?[^\s)]{0,2048}\)/gi,
   },
   { type: "data-url", pattern: /data:[^;,]+;base64,/gi },
   { type: "hex-blob", pattern: /[0-9a-fA-F]{64,}/g },
   // Outbound URL last. Ordering only affects the order of findings: a
   // markdown-image or data-URL span also matches outbound-url, and callers
   // receive both findings — no de-duplication is applied.
-  { type: "outbound-url", pattern: /https?:\/\/[^\s)"'<>]+/g },
+  {
+    type: "outbound-url",
+    pattern: /(?:https?:(?:\/\/|\\+)|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi,
+  },
 ];
 
 /**

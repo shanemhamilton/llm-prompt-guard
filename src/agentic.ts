@@ -255,16 +255,61 @@ export async function fingerprintTool(
   return { name: tool.name, digest };
 }
 
-/** Recursively sort object keys so JSON.stringify is order-stable. */
-function canonicalize(value: unknown, depth = 0): unknown {
-  if (depth > MAX_SCHEMA_DEPTH) return null;
+/**
+ * Stack-overflow backstop for `canonicalize()` on a pathologically deep
+ * (non-cyclic) schema. Far higher than `MAX_SCHEMA_DEPTH` (which bounds
+ * the unrelated poisoning-scan traversal in `collectStrings`) because
+ * hitting it must not truncate real fingerprint content to `null` —
+ * see the `[Truncated:...]` fallback below. Actual cycles are caught
+ * by the ancestor `WeakSet` long before this matters.
+ */
+const MAX_CANONICALIZE_DEPTH = 1000;
+/** Marker for a cyclic reference so a change elsewhere in the schema still changes the hash. */
+const CIRCULAR_MARKER = "[Circular]";
+
+/**
+ * Recursively sort object keys so JSON.stringify is order-stable, while
+ * hashing the full structure rather than truncating it:
+ * - A `WeakSet` of ancestors on the current path detects cycles and
+ *   emits a stable marker, instead of a depth cap silently turning
+ *   deeper content (and any rug-pull hidden past it) into `null`.
+ * - Sorted objects are built with `Object.create(null)` so a literal
+ *   `__proto__` key becomes an own property instead of reassigning the
+ *   output object's prototype (which `{}["__proto__"] = x` would do,
+ *   silently dropping the key from the hash).
+ */
+function canonicalize(
+  value: unknown,
+  ancestors: WeakSet<object> = new WeakSet(),
+  depth = 0
+): unknown {
   if (value === null || typeof value !== "object") return value ?? null;
-  if (Array.isArray(value)) return value.map((v) => canonicalize(v, depth + 1));
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    sorted[key] = canonicalize((value as Record<string, unknown>)[key], depth + 1);
+  if (ancestors.has(value)) return CIRCULAR_MARKER;
+  if (depth > MAX_CANONICALIZE_DEPTH) {
+    try {
+      return `[Truncated:${JSON.stringify(value)}]`;
+    } catch {
+      return "[Truncated:unstringifiable]";
+    }
   }
-  return sorted;
+
+  ancestors.add(value);
+  let result: unknown;
+  if (Array.isArray(value)) {
+    result = value.map((v) => canonicalize(v, ancestors, depth + 1));
+  } else {
+    const sorted: Record<string, unknown> = Object.create(null);
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      sorted[key] = canonicalize(
+        (value as Record<string, unknown>)[key],
+        ancestors,
+        depth + 1
+      );
+    }
+    result = sorted;
+  }
+  ancestors.delete(value);
+  return result;
 }
 
 /**
