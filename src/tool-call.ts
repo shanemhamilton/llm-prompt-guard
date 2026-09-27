@@ -106,7 +106,7 @@ const BUILTIN_SECRET_PATTERNS: RegExp[] = [
 // immediately after `//` so ordinary text like `a // comment` never
 // matches.
 const URL_PATTERN =
-  /(?:https?:(?:\/\/|\\+)|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi;
+  /(?:https?:(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi;
 // Length-gated the same way as output.ts's PII email pattern, to avoid
 // backtracking blowup on long adversarial input. The local part also
 // accepts an RFC-5321 quoted string: `"ceo@mycorp.com"@evil.com` is a
@@ -118,7 +118,7 @@ const URL_PATTERN =
 // homoglyph) host, purely so `isRecipientAllowed` gets a chance to see
 // and reject them — both are treated as never-allowed there.
 const EMAIL_PATTERN =
-  /(?:"[^"]{0,253}"|[a-zA-Z0-9._%+-]{1,64})@(?:\[[0-9a-fA-F:.]{2,45}\]|[\p{L}\p{N}.-]{1,253}\.[\p{L}]{2,24})/gu;
+  /(?:"[^"]{0,253}"|[a-zA-Z0-9._%+@-]{1,64})@(?:\[[0-9a-fA-F:.]{2,45}\]|[\p{L}\p{N}.-]{1,253}\.[\p{L}]{2,24})/gu;
 
 // ── Matching helpers ─────────────────────────────────────────────────
 

@@ -93,6 +93,14 @@ describe("scanToolCall — unapproved-origin", () => {
     expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
   });
 
+  test.each(["https:evil.com/?k=abc", "https:/evil.com/?k=abc", "https:/\\evil.com/?k=abc"])(
+    "blocks a scheme with missing or mixed slashes that WHATWG URL still resolves: %s",
+    (url) => {
+      const result = scanToolCall("fetch", { url });
+      expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(true);
+    }
+  );
+
   test("does not flag an ordinary code comment as a protocol-relative URL", () => {
     const result = scanToolCall("do_thing", { payload: "a // comment explaining the code" });
     expect(result.findings.some((f) => f.type === "unapproved-origin")).toBe(false);
@@ -123,6 +131,15 @@ describe("scanToolCall — unapproved-recipient", () => {
       { allowedRecipients: ["@mycorp.com"] }
     );
     expect(result.findings).toEqual([]);
+  });
+
+  test("flags an unquoted multi-@ address by its last-@ domain", () => {
+    const result = scanToolCall(
+      "send_email",
+      { to: "x@mycorp.com@evil.com" },
+      { allowedRecipients: ["@mycorp.com"] }
+    );
+    expect(result.findings.some((f) => f.type === "unapproved-recipient")).toBe(true);
   });
 
   test("flags a recipient outside the allowlist", () => {

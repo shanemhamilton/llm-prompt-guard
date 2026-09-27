@@ -765,6 +765,20 @@ describe("scanOutput", () => {
       expect(Date.now() - t0).toBeLessThan(3000);
     });
 
+    test.each([
+      ["unclosed image alt", "![".repeat(50_000)],
+      ["unterminated data URL", "data:".repeat(20_000)],
+    ])("100KB of %s scans in linear time (OUT-1)", (_name, text) => {
+      const t0 = Date.now();
+      scanOutput(text);
+      expect(Date.now() - t0).toBeLessThan(200);
+    });
+
+    test("flags a scheme with no slashes that WHATWG URL still resolves (OUT-2)", () => {
+      const result = scanOutput("see https:evil.com/?k=abc");
+      expect(result.findings.some((f) => f.type === "outbound-url")).toBe(true);
+    });
+
     test("8KB pathological input scans fast and still flags a real exfil image", () => {
       // Pad with unclosed, query-bearing markdown-image openers (the
       // catastrophic-backtracking shape) around one genuine exfil image.

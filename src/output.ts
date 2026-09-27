@@ -385,8 +385,10 @@ export function createOutputValidator(
  * never matches.
  *
  * Keep patterns linear: `markdown-image-with-query` excludes `?` from the
- * host/path class so unclosed input has one way to split, and bounds both
- * classes so each unclosed `![` costs O(1), not a rescan to end of text.
+ * host/path class so unclosed input has one way to split, and bounds the
+ * alt, host/path, and data-URL media-type classes so each unclosed `![` or
+ * `data:` costs O(1), not a rescan to end of text. There is deliberately no
+ * length cap: truncating output would let padding hide a trailing exfil URL.
  */
 const EXFIL_PATTERNS: Array<{
   type: ExfilFinding["type"];
@@ -395,16 +397,16 @@ const EXFIL_PATTERNS: Array<{
   { type: "base64-blob", pattern: /[A-Za-z0-9+/]{120,}={0,2}/g },
   {
     type: "markdown-image-with-query",
-    pattern: /!\[[^\]]*\]\((?:https?:(?:\/\/|\\+)|\/\/(?=[A-Za-z0-9]))[^\s)?]{1,2048}\?[^\s)]{0,2048}\)/gi,
+    pattern: /!\[[^\]]{0,1024}\]\((?:https?:(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)?]{1,2048}\?[^\s)]{0,2048}\)/gi,
   },
-  { type: "data-url", pattern: /data:[^;,]+;base64,/gi },
+  { type: "data-url", pattern: /data:[^;,]{1,256};base64,/gi },
   { type: "hex-blob", pattern: /[0-9a-fA-F]{64,}/g },
   // Outbound URL last. Ordering only affects the order of findings: a
   // markdown-image or data-URL span also matches outbound-url, and callers
   // receive both findings — no de-duplication is applied.
   {
     type: "outbound-url",
-    pattern: /(?:https?:(?:\/\/|\\+)|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi,
+    pattern: /(?:https?:(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi,
   },
 ];
 
