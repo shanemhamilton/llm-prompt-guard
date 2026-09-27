@@ -771,7 +771,9 @@ describe("scanOutput", () => {
     ])("100KB of %s scans in linear time (OUT-1)", (_name, text) => {
       const t0 = Date.now();
       scanOutput(text);
-      expect(Date.now() - t0).toBeLessThan(200);
+      // Headroom for slow CI runners: linear is ~80 ms locally; the old
+      // quadratic patterns took ~1.9 s on the same input.
+      expect(Date.now() - t0).toBeLessThan(1000);
     });
 
     test("flags a scheme with no slashes that WHATWG URL still resolves (OUT-2)", () => {
