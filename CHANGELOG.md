@@ -11,6 +11,13 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.2.2](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.2.1...v2.2.2) (2026-09-27)
+
+
+### Bug Fixes
+
+* close detection bypasses and slow-input paths from 2026-09-27 audit ([#53](https://github.com/shanemhamilton/llm-prompt-guard/issues/53)) ([0b345b9](https://github.com/shanemhamilton/llm-prompt-guard/commit/0b345b9b97237baa68566dd5bb5d43c115ccbe58))
+
 ## [2.2.1](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.2.0...v2.2.1) (2026-09-19)
 
 
