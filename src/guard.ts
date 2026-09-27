@@ -419,9 +419,12 @@ function safeToString(input: unknown): string | null {
   }
 }
 
+const MIN_BASE64_PRINTABLE_RATIO = 0.9;
+
 /**
  * Try to decode a base64 string. Works in both browser (atob) and Node (Buffer).
- * Returns the decoded string if it's ASCII-printable and ≥4 chars, else null.
+ * Returns the decoded text (non-printables as spaces) when it is at least
+ * MIN_BASE64_PRINTABLE_RATIO ASCII-printable and ≥4 chars, else null.
  */
 function tryBase64Decode(segment: string): string | null {
   try {
@@ -433,10 +436,12 @@ function tryBase64Decode(segment: string): string | null {
     } else {
       return null;
     }
-    // Only keep ASCII-printable results ≥4 chars
-    if (decoded.length < 4) return null;
-    if (!/^[\x20-\x7E]+$/.test(decoded)) return null;
-    return decoded;
+    // Best-effort: whitespace and stray bytes (a trailing "\n") must not
+    // discard the payload, but mostly-binary decodes are not text.
+    const text = decoded.replace(/[^\x20-\x7E]/g, " ").trim();
+    const printable = decoded.replace(/[^\x20-\x7E]/g, "").length;
+    if (text.length < 4 || printable < decoded.length * MIN_BASE64_PRINTABLE_RATIO) return null;
+    return text;
   } catch {
     return null;
   }
@@ -523,7 +528,12 @@ function foldForDetection(input: string): string {
   // Strip invisibles (BMP + Plane 14 + VS Supplement) — same char
   // classes `normalizeForOutput` uses, done explicitly here so we can
   // fold confusables BEFORE NFKD next.
-  let result = input.replace(INVISIBLE_CHARS, "").replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
+  // Control characters too: `detect()`/`assess()` never pass through
+  // `sanitize()`'s own strip, and "ig\x00nore" must still read "ignore".
+  let result = input
+    .replace(CONTROL_CHARS, "")
+    .replace(INVISIBLE_CHARS, "")
+    .replace(INVISIBLE_CHARS_SUPPLEMENTARY, "");
   result = foldConfusablesPreNfkd(result);
   result = result.normalize("NFKD");
   result = result.replace(DIACRITICAL_MARKS, "").replace(MODIFIER_LETTERS, "");
@@ -644,7 +654,9 @@ export function normalizeForDetection(
       );
     }
     if (decodedPass === result) break; // no change — stop early
-    result = decodedPass;
+    // Decoded bytes can carry invisibles or confusables ("ig%E2%80%8Bnore"),
+    // so fold again — otherwise encoding them bypasses steps 1b-4c.
+    result = foldForDetection(decodedPass);
   }
 
   // Step 6: Collapse character-splitting separators
@@ -1036,6 +1048,25 @@ function sanitizeForPrompt(
   // Step 4: Branch on mode.
   if (patternsDetected > 0) {
     logDetection(log, field, patternsDetected, inputStr.length, hasHighSeverity, userId);
+  }
+
+  // Only a decoded view (base64, ROT13, reversed text) matched: rewriting
+  // the in-place text can't remove that payload, so block it outright.
+  const isHiddenOnly =
+    patternsDetected > 0 &&
+    !signals.tagBlockPayload &&
+    !patterns.filter(isDetectable).some(({ pattern }) => pattern.test(normalizedInPlace));
+
+  if (isHiddenOnly && (mode === "block" || mode === "neutralize" || mode === "excise")) {
+    return {
+      sanitized: "",
+      wasModified: true,
+      wasBlocked: true,
+      blockReason: "Invalid input",
+      patternsDetected,
+      mode,
+      signals,
+    };
   }
 
   switch (mode) {

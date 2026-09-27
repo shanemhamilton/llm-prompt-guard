@@ -14,6 +14,8 @@ import {
 import { scanOutput } from "../output";
 import { wrapToolResult } from "../agentic";
 
+export { GuardBlockedError };
+
 export interface InvokableTool {
   name?: string;
   description?: string;
@@ -25,7 +27,12 @@ export interface InvokableTool {
 export interface LangChainGuardOptions extends GuardAdapterOptions<{ input: unknown }> {
   /** Assess the stringified input before calling `invoke`. Default `true`. */
   scanInput?: boolean;
-  /** Quarantine a string result through `wrapToolResult` after `invoke`. Default `true`. */
+  /**
+   * Wrap a string result through `wrapToolResult` after `invoke`, adding
+   * quarantine delimiters. Default `true`. In `mode: "block"`, output is
+   * scanned for exfiltration regardless of this option — set to `false`
+   * to skip only the delimiter wrapping, not the scan.
+   */
   wrapOutput?: boolean;
 }
 
@@ -66,17 +73,18 @@ export function guardTool<T extends InvokableTool>(
       }
 
       const output = await tool.invoke(input, config);
-      if (!wrapOutput) return output;
 
       // Structured results are scanned via their JSON text so an exfil URL
-      // inside an object is still caught; only string results are re-wrapped,
-      // since wrapping would change a structured result's type.
+      // inside an object is still caught. Scanning runs even when
+      // wrapOutput is false — that option only controls whether a clean
+      // string result also gets quarantine delimiters, not whether block
+      // mode is allowed to see exfiltration-shaped output.
       const scan = scanOutput(toText(output));
       if (isOutputUnsafe(scan)) {
         options.onDetect?.(scan, { input });
         if (mode === "block") throw new GuardBlockedError(scan);
       }
-      if (typeof output !== "string") return output;
+      if (!wrapOutput || typeof output !== "string") return output;
       return wrapToolResult(output, { sourceName: tool.name ?? "langchain_tool" }).wrapped;
     },
   } as T;

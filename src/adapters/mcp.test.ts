@@ -99,6 +99,47 @@ describe("guardMcpClient — callTool", () => {
     expect(guarded.callTool).toBeUndefined();
   });
 
+  test("preserves non-text content items and quarantines resource.text individually (#52)", async () => {
+    const client: McpClient = {
+      listTools: jest.fn().mockResolvedValue({ tools: [] }),
+      callTool: jest.fn().mockResolvedValue({
+        content: [
+          { type: "text", text: "raw result" },
+          { type: "image", data: "base64data", mimeType: "image/png" },
+          { type: "resource", resource: { uri: "file:///a.txt", text: "resource text" } },
+        ],
+      }),
+    };
+    const guarded = guardMcpClient(client);
+    const result = (await guarded.callTool!("search", {})) as {
+      content: Array<{ type: string; text?: string; data?: string; resource?: { text?: string } }>;
+    };
+
+    expect(result.content).toHaveLength(3);
+    expect(result.content[0].text).toContain("raw result");
+    expect(result.content[0].text).not.toBe("raw result");
+    expect(result.content[1]).toEqual({ type: "image", data: "base64data", mimeType: "image/png" });
+    expect(result.content[2].resource?.text).toContain("resource text");
+    expect(result.content[2].resource?.text).not.toBe("resource text");
+  });
+
+  test("a resource-only result keeps its resource content instead of becoming an empty text item (#52)", async () => {
+    const client: McpClient = {
+      listTools: jest.fn().mockResolvedValue({ tools: [] }),
+      callTool: jest.fn().mockResolvedValue({
+        content: [{ type: "resource", resource: { uri: "file:///a.txt", text: "only a resource" } }],
+      }),
+    };
+    const guarded = guardMcpClient(client);
+    const result = (await guarded.callTool!("search", {})) as {
+      content: Array<{ type: string; resource?: { text?: string } }>;
+    };
+
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("resource");
+    expect(result.content[0].resource?.text).toContain("only a resource");
+  });
+
   test("routes callTool results through a user-supplied guard, honoring its extraPatterns", async () => {
     const client: McpClient = {
       listTools: jest.fn().mockResolvedValue({ tools: [] }),

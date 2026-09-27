@@ -192,6 +192,38 @@ describe("fingerprintTool", () => {
     expect(after.digest).not.toBe(before.digest);
   });
 
+  it("changes when content past the 12-level scan-depth cap changes (OUT-3)", async () => {
+    function nest(depth: number, leaf: unknown): unknown {
+      return depth === 0 ? leaf : { child: nest(depth - 1, leaf) };
+    }
+    const DEPTH = 20; // well past MAX_SCHEMA_DEPTH (12)
+    const before = await fingerprintTool({
+      name: "deep",
+      inputSchema: nest(DEPTH, { description: "original" }),
+    });
+    const after = await fingerprintTool({
+      name: "deep",
+      inputSchema: nest(DEPTH, { description: "changed at depth 13+ (rug pull)" }),
+    });
+    expect(after.digest).not.toBe(before.digest);
+  });
+
+  it("includes a literal __proto__ schema key in the hash (OUT-3)", async () => {
+    // Object literal syntax special-cases `__proto__`; JSON.parse does not.
+    const schemaA = JSON.parse('{"properties":{"__proto__":{"description":"a"}}}');
+    const schemaB = JSON.parse('{"properties":{"__proto__":{"description":"b"}}}');
+    const before = await fingerprintTool({ name: "proto", inputSchema: schemaA });
+    const after = await fingerprintTool({ name: "proto", inputSchema: schemaB });
+    expect(after.digest).not.toBe(before.digest);
+  });
+
+  it("terminates on a cyclic schema instead of hanging (OUT-3)", async () => {
+    const cyclic: Record<string, unknown> = { description: "fine" };
+    cyclic.self = cyclic;
+    const result = await fingerprintTool({ name: "cyclic", inputSchema: cyclic });
+    expect(result.digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("is stable across cosmetic key reordering", async () => {
     const before = await fingerprintTool(BENIGN_TOOL);
     const reordered = await fingerprintTool({

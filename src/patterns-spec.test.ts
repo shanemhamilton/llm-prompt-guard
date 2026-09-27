@@ -198,6 +198,8 @@ describe("patterns spec (src/data/builtin-patterns.json)", () => {
       ["ignore-repeat", repeatTo("ignore ", CHUNK_TARGET_BYTES)],
       ["comment-repeat", repeatTo("<!-- ", CHUNK_TARGET_BYTES)],
       ["a-b-repeat", repeatTo("a b ", CHUNK_TARGET_BYTES)],
+      ["newline-repeat", repeatTo("\n", CHUNK_TARGET_BYTES)],
+      ["crlf-repeat", repeatTo("\r\n", CHUNK_TARGET_BYTES)],
     ];
 
     test.each(patterns.map((p): [string, SpecPattern] => [p.id, p]))(

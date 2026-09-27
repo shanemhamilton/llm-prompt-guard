@@ -70,9 +70,14 @@ export function createSessionWith(
   const escalationThreshold =
     config.escalationThreshold ?? DEFAULT_ESCALATION_THRESHOLD;
 
-  if (suspicionThreshold < 0 || escalationThreshold <= 0) {
+  if (
+    !Number.isFinite(suspicionThreshold) ||
+    suspicionThreshold < 0 ||
+    !Number.isFinite(escalationThreshold) ||
+    escalationThreshold <= 0
+  ) {
     throw new RangeError(
-      "SessionConfig thresholds must be non-negative (escalationThreshold positive)."
+      "SessionConfig thresholds must be finite and non-negative (escalationThreshold positive)."
     );
   }
 
@@ -87,8 +92,21 @@ export function createSessionWith(
    * straight through (it structurally satisfies `ExternalTurnScore`)
    * keeps its own detection fields unchanged, so `record(assess(text))`
    * behaves exactly like `record(text)`.
+   *
+   * `null`/`undefined` aren't in the documented input type, but a
+   * non-TS caller can still pass them; treat that turn as a
+   * non-detection (score 0) rather than throwing on `input.score`.
    */
   function resolveTurn(input: string | ExternalTurnScore): AssessResult {
+    if (input == null) {
+      return {
+        score: 0,
+        patternsDetected: 0,
+        hasHighSeverity: false,
+        signals: EMPTY_SIGNALS,
+        reasons: [],
+      };
+    }
     if (typeof input === "string") {
       return assessFn(input);
     }

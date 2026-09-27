@@ -28,18 +28,44 @@ export interface McpGuardOptions extends GuardAdapterOptions<{ tool: ToolDefinit
   onDrift?: (name: string, before: string, after: string) => void;
 }
 
-function toolResultText(result: unknown): string | undefined {
-  if (typeof result === "string") return result;
-  if (result && typeof result === "object" && "content" in result) {
-    const content = (result as { content?: unknown }).content;
-    if (Array.isArray(content)) {
-      return content
-        .filter((p): p is { type: string; text: string } => p?.type === "text")
-        .map((p) => p.text)
-        .join("\n");
+/** A single MCP `CallToolResult` content item — text, image, or embedded resource. Structural only. */
+interface McpContentItem {
+  type: string;
+  text?: string;
+  resource?: { text?: string; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
+/**
+ * Quarantine every text-bearing item in a `content` array in place —
+ * `text` items and `resource` items carrying `resource.text` — leaving
+ * image/blob/other items untouched. Rebuilding `content` as a single
+ * joined text item (the previous behavior) silently dropped non-text
+ * items and any `resource.text`.
+ */
+function quarantineContentItems(
+  content: unknown[],
+  guard: ReturnType<typeof resolveGuard>,
+  sourceName: string
+): unknown[] {
+  return content.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const entry = item as McpContentItem;
+
+    if (entry.type === "text" && typeof entry.text === "string") {
+      return { ...entry, text: quarantineToolResult(guard, entry.text, sourceName) };
     }
-  }
-  return undefined;
+    if (entry.type === "resource" && typeof entry.resource?.text === "string") {
+      return {
+        ...entry,
+        resource: {
+          ...entry.resource,
+          text: quarantineToolResult(guard, entry.resource.text, sourceName),
+        },
+      };
+    }
+    return entry;
+  });
 }
 
 /** Quarantine a tool result through `guard.sanitize` — mirrors `wrapToolResult` in `../agentic`, but via the caller's guard instance so `extraPatterns`/`disableCategories` are honored. */
@@ -116,13 +142,14 @@ export function guardMcpClient<T extends McpClient>(client: T, options: McpGuard
   if (client.callTool) {
     wrapped.callTool = async (...args: unknown[]) => {
       const result = await client.callTool!(...args);
-      const text = toolResultText(result);
-      if (text === undefined) return result;
-      const quarantined = quarantineToolResult(guard, text, "mcp_tool");
-      // toolResultText accepts a bare string; spreading one into an object
-      // literal would turn it into indexed characters, so hand it back as-is.
-      if (typeof result === "string") return quarantined;
-      return { ...(result as object), content: [{ type: "text", text: quarantined }] };
+      if (typeof result === "string") {
+        return quarantineToolResult(guard, result, "mcp_tool");
+      }
+      if (result && typeof result === "object" && Array.isArray((result as { content?: unknown }).content)) {
+        const content = (result as { content: unknown[] }).content;
+        return { ...(result as object), content: quarantineContentItems(content, guard, "mcp_tool") };
+      }
+      return result;
     };
   }
 

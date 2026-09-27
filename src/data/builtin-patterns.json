@@ -381,7 +381,7 @@
       "id": "format.code-fence-json",
       "category": "format-injection",
       "severity": "medium",
-      "pattern": "```\\s*(json|javascript|python|typescript|bash|sh)\\s*\\n\\s*\\{",
+      "pattern": "```[ \\t]*(json|javascript|python|typescript|bash|sh)[ \\t]*\\n\\s*\\{",
       "flags": "i",
       "description": "A code fence opening a JSON-shaped object, a common payload-smuggling wrapper.",
       "positive": [
@@ -486,7 +486,7 @@
       "id": "format.claude-role-line",
       "category": "format-injection",
       "severity": "medium",
-      "pattern": "^\\s*(Human|Assistant)\\s*:",
+      "pattern": "^[ \\t]*(Human|Assistant)[ \\t]*:",
       "flags": "im",
       "description": "Anthropic-style Human/Assistant role line anchored to the start of a line.",
       "positive": [

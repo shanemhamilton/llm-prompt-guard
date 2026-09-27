@@ -13,7 +13,12 @@
 
 // ── Config bounds ────────────────────────────────────────────────────
 
-/** Recursion cap on `args` traversal — bounds a hostile/degenerate shape. */
+/**
+ * Recursion cap on `args` traversal — bounds a hostile/degenerate shape.
+ * Exceeding it produces a `depth-limit-exceeded` finding (fail-closed)
+ * instead of silently stopping — a payload could otherwise hide past the
+ * cap and scan clean simply by nesting deep enough.
+ */
 const MAX_ARGS_DEPTH = 32;
 
 /** Redaction: keep this many leading chars of a detected secret. */
@@ -46,7 +51,8 @@ export interface ToolCallScanOptions {
 export type ToolCallFindingType =
   | "unapproved-origin"
   | "unapproved-recipient"
-  | "secret-in-argument";
+  | "secret-in-argument"
+  | "depth-limit-exceeded";
 
 export interface ToolCallFinding {
   type: ToolCallFindingType;
@@ -92,10 +98,27 @@ const BUILTIN_SECRET_PATTERNS: RegExp[] = [
 
 // URL/email detection — copied from src/output.ts (not exported there)
 // rather than editing that file, per this change's file-ownership scope.
-const URL_PATTERN = /https?:\/\/[^\s)"'<>]+/g;
+//
+// Case-insensitive, and covers the obfuscation forms a naive `https?://`
+// check misses: protocol-relative (`//evil.com/...`) and the backslash
+// separator some parsers accept in place of `//` (`https:\evil.com`).
+// The protocol-relative branch requires a host-like character
+// immediately after `//` so ordinary text like `a // comment` never
+// matches.
+const URL_PATTERN =
+  /(?:https?:(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi;
 // Length-gated the same way as output.ts's PII email pattern, to avoid
-// backtracking blowup on long adversarial input.
-const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,253}\.[a-zA-Z]{2,24}/g;
+// backtracking blowup on long adversarial input. The local part also
+// accepts an RFC-5321 quoted string: `"ceo@mycorp.com"@evil.com` is a
+// real, deliverable address whose recipient domain is the one after the
+// LAST `@` — matching only the bare-word local-part form let that
+// quoted string smuggle a look-alike domain past the allowlist check by
+// truncating the match before the real `@evil.com`. The domain side
+// also accepts an IP-literal (`[203.0.113.5]`) or non-ASCII (IDN /
+// homoglyph) host, purely so `isRecipientAllowed` gets a chance to see
+// and reject them — both are treated as never-allowed there.
+const EMAIL_PATTERN =
+  /(?:"[^"]{0,253}"|[a-zA-Z0-9._%+@-]{1,64})@(?:\[[0-9a-fA-F:.]{2,45}\]|[\p{L}\p{N}.-]{1,253}\.[\p{L}]{2,24})/gu;
 
 // ── Matching helpers ─────────────────────────────────────────────────
 
@@ -135,9 +158,30 @@ function isOriginAllowed(url: string, allowedOrigins: string[]): boolean {
   return false;
 }
 
+/**
+ * A domain shape that can never satisfy an allowlist entry, regardless of
+ * what it contains: an IP-literal host (`[203.0.113.5]`) has no
+ * meaningful suffix to match, and a non-ASCII (IDN/homoglyph) host risks
+ * a visually-confusable domain sailing past a suffix check written in
+ * plain ASCII. Reject both outright rather than let them reach the loop
+ * below.
+ */
+function isDisallowedDomainShape(domain: string): boolean {
+  if (domain.startsWith("[") && domain.endsWith("]")) return true;
+  for (let i = 0; i < domain.length; i++) {
+    if (domain.charCodeAt(i) > 127) return true; // non-ASCII (IDN/homoglyph)
+  }
+  return false;
+}
+
 function isRecipientAllowed(email: string, allowedRecipients: string[]): boolean {
   const lowerEmail = email.toLowerCase();
-  const domain = lowerEmail.slice(lowerEmail.indexOf("@") + 1);
+  // The domain is everything after the LAST `@`. An RFC-5321 quoted
+  // local part can embed its own `@` (`"ceo@mycorp.com"@evil.com`) —
+  // taking the first `@` reads that inner text as the domain and misses
+  // the address's real, deliverable domain entirely.
+  const domain = lowerEmail.slice(lowerEmail.lastIndexOf("@") + 1);
+  if (isDisallowedDomainShape(domain)) return false;
   for (const entry of allowedRecipients) {
     const lowerEntry = entry.toLowerCase();
     if (lowerEntry.startsWith("@")) {
@@ -215,6 +259,32 @@ function scanStringLeaf(
   }
 }
 
+/** Marks a finding's `path` as pointing at an object key, not its value. */
+const KEY_FINDING_SUFFIX = " (key)";
+
+/**
+ * Walk `[key, value]` pairs from a plain object's entries or a `Map`.
+ * Keys are scanned as leaves too — `{ "https://evil.com/?k=abc": "1" }`
+ * and an AWS key used as a header name are both exfiltration-shaped even
+ * though nothing ever reads them as a *value*.
+ */
+function scanEntries(
+  entries: Iterable<[unknown, unknown]>,
+  path: string,
+  depth: number,
+  seen: WeakSet<object>,
+  ctx: ScanContext,
+  findings: ToolCallFinding[]
+): void {
+  for (const [key, child] of entries) {
+    const keySegment = typeof key === "string" ? key : String(key);
+    if (typeof key === "string") {
+      scanStringLeaf(key, `${path}.${keySegment}${KEY_FINDING_SUFFIX}`, ctx, findings);
+    }
+    walk(child, `${path}.${keySegment}`, depth + 1, seen, ctx, findings);
+  }
+}
+
 function walk(
   value: unknown,
   path: string,
@@ -223,7 +293,18 @@ function walk(
   ctx: ScanContext,
   findings: ToolCallFinding[]
 ): void {
-  if (depth > MAX_ARGS_DEPTH) return;
+  if (depth > MAX_ARGS_DEPTH) {
+    // Fail closed: an argument shape this deep can't be proven safe.
+    // Truncating silently (the prior behavior) let a payload nested past
+    // the cap escape scanning entirely — surface the truncation itself
+    // as a blocking finding instead.
+    findings.push({
+      type: "depth-limit-exceeded",
+      path,
+      evidence: `nesting exceeds max depth ${MAX_ARGS_DEPTH}`,
+    });
+    return;
+  }
 
   if (typeof value === "string") {
     scanStringLeaf(value, path, ctx, findings);
@@ -238,9 +319,19 @@ function walk(
     value.forEach((item, i) => walk(item, `${path}[${i}]`, depth + 1, seen, ctx, findings));
     return;
   }
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    walk(child, `${path}.${key}`, depth + 1, seen, ctx, findings);
+  if (value instanceof Map) {
+    scanEntries(value.entries(), path, depth, seen, ctx, findings);
+    return;
   }
+  if (value instanceof Set) {
+    let i = 0;
+    for (const item of value) {
+      walk(item, `${path}[${i}]`, depth + 1, seen, ctx, findings);
+      i++;
+    }
+    return;
+  }
+  scanEntries(Object.entries(value as Record<string, unknown>), path, depth, seen, ctx, findings);
 }
 
 // ── Public API ───────────────────────────────────────────────────────
