@@ -389,7 +389,9 @@ behavior), `unapproved-recipient` (an email outside `allowedRecipients`,
 matched exact or by `@domain` suffix; none are produced when no allowlist
 is configured), and `secret-in-argument` (AWS, OpenAI, GitHub, and Slack
 tokens, JWTs, PEM private-key headers, Bearer tokens, generic `key:
-value` assignments, plus your own `secretPatterns`). Evidence is
+value` assignments, plus your own `secretPatterns`), and
+`depth-limit-exceeded` (arguments nested deeper than 32 levels, which
+fail closed instead of going unscanned). Evidence is
 redacted before it reaches a finding, and URL evidence drops the query
 string and any userinfo so the redaction doesn't itself leak a secret
 riding in the URL.
