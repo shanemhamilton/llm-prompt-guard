@@ -11,6 +11,20 @@ by hand; write the commit message you want to read here. Entries for 2.1.0 and
 earlier were hand-written in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style and are kept verbatim.
 
+## [2.3.0](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.2.2...v2.3.0) (2026-10-21)
+
+
+### Features
+
+* **adapters:** add requireField and flagOutboundUrls options ([a51ce83](https://github.com/shanemhamilton/llm-prompt-guard/commit/a51ce833ae1a30fce2ade36018d3411792287093))
+
+
+### Bug Fixes
+
+* close adapter bypasses and quarantine breakout from 2026-10-20 audit ([34e510f](https://github.com/shanemhamilton/llm-prompt-guard/commit/34e510f180a055b5c1982cba4d10657035a87bdc))
+* close adapter bypasses and quarantine breakout from 2026-10-20 audit ([7071658](https://github.com/shanemhamilton/llm-prompt-guard/commit/7071658f1af0f3c75ad942d9f73408d5a3563228))
+* **html:** scan placeholder on input tags; route langchain entry points through guard ([39df71b](https://github.com/shanemhamilton/llm-prompt-guard/commit/39df71bee9f48dacb05bdd4d5d10f2b688ecf62a))
+
 ## [2.2.2](https://github.com/shanemhamilton/llm-prompt-guard/compare/v2.2.1...v2.2.2) (2026-09-27)
 
 
