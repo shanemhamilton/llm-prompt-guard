@@ -243,7 +243,10 @@ function pushHiddenAttrText(state: ScanState, tag: OpenTag): void {
 }
 
 function handleOpenTag(state: ScanState, tag: OpenTag): void {
-  if (tag.name === "input") return handleHiddenInput(state, tag.attrsStr);
+  if (tag.name === "input") {
+    if (!isSkipped(state)) pushHiddenAttrText(state, tag);
+    return handleHiddenInput(state, tag.attrsStr);
+  }
 
   const isDrop = DROP_TAGS.has(tag.name);
   const isVoid = tag.isSelfClosing || VOID_ELEMENTS.has(tag.name);

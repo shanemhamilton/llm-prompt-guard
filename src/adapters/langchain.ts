@@ -106,10 +106,12 @@ export function guardTool<T extends InvokableTool>(
   // A Proxy, not `{ ...tool }`: LangChain tools are class instances whose
   // methods live on the prototype and would be lost by spreading.
   return new Proxy(tool, {
-    get(target, prop) {
+    get(target, prop, receiver) {
       if (prop === "invoke") return invoke;
       const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
+      // Bound to the proxy, so entry points like `call`/`stream` that
+      // reach `this.invoke` internally go through the guarded invoke.
+      return typeof value === "function" ? value.bind(receiver) : value;
     },
   });
 }
