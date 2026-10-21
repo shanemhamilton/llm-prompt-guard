@@ -19,6 +19,8 @@ import { createSessionWith } from "./session";
 import {
   BUILTIN_PATTERNS,
   CONTROL_CHARS,
+  DIACRITICAL_MARKS,
+  HOMOGLYPH_RANGE,
   HOMOGLYPH_MAP,
   INTERLEAVED_INVISIBLE,
   INVISIBLE_CHARS,
@@ -458,8 +460,6 @@ function rot13(input: string): string {
 }
 
 
-const HOMOGLYPH_RANGE = /[\u0410-\u04BB\u03B1\u03BF]/g;
-const DIACRITICAL_MARKS = /[\u0300-\u036F]/g;
 /**
  * Spacing Modifier Letters (U+02B0\u2013U+02FF) \u2014 not combining marks, but
  * NFKD's compatibility decomposition of a few confusable characters
@@ -846,10 +846,15 @@ function quarantineInput(
   // case-insensitively by the models consuming this, so `</UNTRUSTED_INPUT>`
   // breaks out of `</untrusted_input>` just as effectively. An exact-case
   // strip let that variant through untouched.
-  const stripped = original.replace(
-    new RegExp(escapeRegExp(closeTag), "gi"),
-    ""
-  );
+  //
+  // Repeat until stable: removing the inner tag of `</t</t>>` would
+  // otherwise leave a fresh closing tag behind.
+  const closeRe = new RegExp(escapeRegExp(closeTag), "gi");
+  let stripped = original;
+  for (let before = ""; before !== stripped; ) {
+    before = stripped;
+    stripped = stripped.replace(closeRe, "");
+  }
 
   // Truncate unwrapped text to maxLength before wrapping.
   const safe = truncateWithLog(stripped, field, original.length, log);

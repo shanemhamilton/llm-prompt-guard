@@ -36,8 +36,20 @@ export interface HtmlNormalizeResult {
   signals: HtmlSignals;
 }
 
-/** Code, not content — dropped entirely, never visible or hidden. */
-const DROP_TAGS = new Set(["script", "style", "template", "noscript"]);
+/**
+ * Code, not content — dropped entirely, never visible or hidden.
+ *
+ * shortcut: `<script>` bodies are dropped too, so an injection inside a
+ * script string is not scanned. Counting them as hidden text would make
+ * `hasHiddenText` true on nearly every real page; upgrade by scanning
+ * script bodies for natural-language runs only.
+ */
+const DROP_TAGS = new Set(["script", "style"]);
+/**
+ * Never rendered as page text but read verbatim by a model given the raw
+ * HTML, so their bodies count as hidden text rather than being discarded.
+ */
+const HIDDEN_TAGS = new Set(["template", "noscript"]);
 /** Produce a line break in `visible` so adjacent sentences don't glue together. */
 const BLOCK_TAGS = new Set([
   "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -107,6 +119,12 @@ const ATTR_ARIA_HIDDEN = new RegExp(`(?:^|\\s)aria-hidden\\s*=\\s*${ATTR_VALUE_G
 const ATTR_TYPE = new RegExp(`(?:^|\\s)type\\s*=\\s*${ATTR_VALUE_GROUP}`, "i");
 const ATTR_VALUE = new RegExp(`(?:^|\\s)value\\s*=\\s*${ATTR_VALUE_GROUP}`, "i");
 const ATTR_HIDDEN_BOOL = /(?:^|\s)hidden(?:\s|=|\/|$)/i;
+
+/** Attributes whose value a model reads but a rendered page does not show as text. */
+const HIDDEN_TEXT_ATTRS = ["alt", "title", "aria-label", "placeholder"].map(
+  (name) => new RegExp(`(?:^|\\s)${name}\\s*=\\s*${ATTR_VALUE_GROUP}`, "i")
+);
+const ATTR_META_CONTENT = new RegExp(`(?:^|\\s)content\\s*=\\s*${ATTR_VALUE_GROUP}`, "i");
 
 function extractAttr(re: RegExp, attrsStr: string): string | undefined {
   const m = re.exec(attrsStr);
@@ -215,13 +233,26 @@ interface OpenTag {
   isSelfClosing: boolean;
 }
 
+/** alt/title/aria-label/placeholder (and `<meta content>`) values: model-readable, never page text. */
+function pushHiddenAttrText(state: ScanState, tag: OpenTag): void {
+  const attrs = tag.name === "meta" ? [...HIDDEN_TEXT_ATTRS, ATTR_META_CONTENT] : HIDDEN_TEXT_ATTRS;
+  for (const re of attrs) {
+    const value = extractAttr(re, tag.attrsStr);
+    if (value) state.hidden.push("\n", decodeEntities(value));
+  }
+}
+
 function handleOpenTag(state: ScanState, tag: OpenTag): void {
-  if (tag.name === "input") return handleHiddenInput(state, tag.attrsStr);
+  if (tag.name === "input") {
+    if (!isSkipped(state)) pushHiddenAttrText(state, tag);
+    return handleHiddenInput(state, tag.attrsStr);
+  }
 
   const isDrop = DROP_TAGS.has(tag.name);
   const isVoid = tag.isSelfClosing || VOID_ELEMENTS.has(tag.name);
-  const elementHidden = !isDrop && isElementHidden(tag.attrsStr);
+  const elementHidden = !isDrop && (HIDDEN_TAGS.has(tag.name) || isElementHidden(tag.attrsStr));
   if (elementHidden) state.hiddenElements++;
+  if (!isDrop && !isSkipped(state)) pushHiddenAttrText(state, tag);
 
   pushBlockNewline(state, tag.name, elementHidden);
 

@@ -96,3 +96,32 @@ describe("guardExpress", () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 });
+
+describe("guardExpress — fail-open and oracle hardening", () => {
+  test("the 400 body carries no detection reasons", () => {
+    const res = fakeRes();
+    guardExpress({ mode: "block" })({ body: { prompt: INJECTION } }, res, jest.fn());
+    expect(res.body).toEqual({ error: "prompt_rejected" });
+  });
+
+  test("input past the analysis cap is treated as detected", () => {
+    const res = fakeRes();
+    const padded = "hello ".repeat(20_000) + INJECTION;
+    guardExpress({ mode: "block" })({ body: { prompt: padded } }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test("an undefined req.body (no body parser) errors instead of passing through", () => {
+    const next = jest.fn();
+    guardExpress()({}, fakeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test("requireField rejects a body without the field", () => {
+    const res = fakeRes();
+    const next = jest.fn();
+    guardExpress({ requireField: true })({ body: { messages: [] } }, res, next);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(next).not.toHaveBeenCalled();
+  });
+});
