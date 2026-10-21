@@ -9,6 +9,8 @@ import { resolveGuard, isDetected, type GuardAdapterOptions } from "./shared";
 export interface ExpressGuardOptions extends GuardAdapterOptions<{ req: ExpressRequest }> {
   /** Field to read off `req.body`. Default `"prompt"`. */
   field?: string;
+  /** Reject (400) when `field` is absent instead of passing through. Default `false`. */
+  requireField?: boolean;
 }
 
 export interface ExpressRequest {
@@ -41,8 +43,17 @@ export function guardExpress(options: ExpressGuardOptions = {}) {
   const field = options.field ?? "prompt";
 
   return (req: ExpressRequest, res: ExpressResponse, next: ExpressNext): void => {
-    const value = req.body?.[field];
-    if (value === undefined || value === null) return next();
+    if (req.body === undefined) {
+      // Almost always a missing body parser; passing through would leave
+      // the route unguarded without any sign of it.
+      return next(new Error("llm-prompt-guard: req.body is undefined — mount a body parser before guardExpress"));
+    }
+    const value = req.body[field];
+    if (value === undefined || value === null) {
+      if (!options.requireField) return next();
+      res.status(400).json({ error: "prompt_rejected" });
+      return;
+    }
     // The body is attacker-controlled JSON: a payload wrapped in an array or
     // object must still be assessed, not waved through. Stringify like the
     // LangChain adapter does for non-string input.
@@ -53,7 +64,7 @@ export function guardExpress(options: ExpressGuardOptions = {}) {
 
     options.onDetect?.(result, { req });
     if (mode === "block") {
-      res.status(400).json({ error: "prompt_rejected", reasons: result.reasons });
+      res.status(400).json({ error: "prompt_rejected" });
       return;
     }
     req.guard = result;

@@ -996,3 +996,10 @@ describe("scanOutput", () => {
     });
   });
 });
+
+describe("scanOutput — non-http schemes", () => {
+  test("flags ftp:// and wss:// URLs as outbound-url", () => {
+    const r = scanOutput("send to ftp://evil.com/x and wss://evil.com/s");
+    expect(r.findings.filter((f) => f.type === "outbound-url")).toHaveLength(2);
+  });
+});

@@ -11,6 +11,8 @@
  * of origins, recipients outside an allowlist, and secret-shaped strings.
  */
 
+import { hostMatchesAllowlist } from "./output";
+
 // ── Config bounds ────────────────────────────────────────────────────
 
 /**
@@ -96,17 +98,14 @@ const BUILTIN_SECRET_PATTERNS: RegExp[] = [
   GENERIC_SECRET_ASSIGNMENT_PATTERN,
 ];
 
-// URL/email detection — copied from src/output.ts (not exported there)
-// rather than editing that file, per this change's file-ownership scope.
-//
-// Case-insensitive, and covers the obfuscation forms a naive `https?://`
-// check misses: protocol-relative (`//evil.com/...`) and the backslash
-// separator some parsers accept in place of `//` (`https:\evil.com`).
+// URL/email detection. Case-insensitive, and covers the forms a naive
+// `https?://` check misses: ftp/ws/sftp schemes, protocol-relative
+// (`//evil.com/...`) and the backslash separator some parsers accept in place of `//` (`https:\evil.com`).
 // The protocol-relative branch requires a host-like character
 // immediately after `//` so ordinary text like `a // comment` never
 // matches.
 const URL_PATTERN =
-  /(?:https?:(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi;
+  /(?:(?:https?|ftps?|wss?|sftp):(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi;
 // Length-gated the same way as output.ts's PII email pattern, to avoid
 // backtracking blowup on long adversarial input. The local part also
 // accepts an RFC-5321 quoted string: `"ceo@mycorp.com"@evil.com` is a
@@ -140,22 +139,12 @@ function matchAll(pattern: RegExp, text: string): string[] {
   return matches;
 }
 
-/** Mirrors output.ts's `hostMatchesAllowlist` (not exported there). */
 function isOriginAllowed(url: string, allowedOrigins: string[]): boolean {
-  let host: string;
   try {
-    host = new URL(url).hostname.toLowerCase();
+    return hostMatchesAllowlist(new URL(url).hostname, allowedOrigins);
   } catch {
     return false; // unparseable URL — conservative default: flag it
   }
-  for (const entry of allowedOrigins) {
-    const lowerEntryRaw = entry.toLowerCase();
-    const isSubdomainOnly = lowerEntryRaw.startsWith(".");
-    const lowerEntry = isSubdomainOnly ? lowerEntryRaw.slice(1) : lowerEntryRaw;
-    if (!isSubdomainOnly && host === lowerEntry) return true;
-    if (host.endsWith(`.${lowerEntry}`)) return true;
-  }
-  return false;
 }
 
 /**

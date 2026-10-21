@@ -224,15 +224,6 @@ export const INTERLEAVED_INVISIBLE =
   /[A-Za-z][\u00AD\u200B-\u200F\u2060-\u2064\uFEFF]+[A-Za-z]/g;
 
 /**
- * Any Cyrillic or Greek letter (full blocks — wider than the confusable
- * subset in the homoglyph map). Used to distinguish genuine
- * Cyrillic/Greek text from Latin text salted with look-alikes.
- *
- * Internal — feeds `NormalizationSignals.suspiciousHomoglyphs`.
- */
-export const CYRILLIC_GREEK = /[\u0370-\u03FF\u0400-\u04FF\u0500-\u052F]/g;
-
-/**
  * Non-lossy output normalization — safe for returning to callers.
  *
  * Only strips invisible characters (BMP + Plane 14 tag block + VS

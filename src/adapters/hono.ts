@@ -8,6 +8,8 @@ import { resolveGuard, isDetected, type GuardAdapterOptions } from "./shared";
 export interface HonoGuardOptions extends GuardAdapterOptions<{ c: HonoContext }> {
   /** Field to read off the parsed JSON body. Default `"prompt"`. */
   field?: string;
+  /** Reject (400) when `field` is absent instead of passing through. Default `false`. */
+  requireField?: boolean;
 }
 
 export interface HonoContext {
@@ -43,7 +45,9 @@ export function guardHono(options: HonoGuardOptions = {}) {
     }
 
     const value = body[field];
-    if (value === undefined || value === null) return next();
+    if (value === undefined || value === null) {
+      return options.requireField ? c.json({ error: "prompt_rejected" }, 400) : next();
+    }
     // The body is attacker-controlled JSON: a payload wrapped in an array or
     // object must still be assessed, not waved through. Stringify like the
     // LangChain adapter does for non-string input.
@@ -54,7 +58,7 @@ export function guardHono(options: HonoGuardOptions = {}) {
 
     options.onDetect?.(result, { c });
     if (mode === "block") {
-      return c.json({ error: "prompt_rejected", reasons: result.reasons }, 400);
+      return c.json({ error: "prompt_rejected" }, 400);
     }
     c.set("guard", result);
     await next();

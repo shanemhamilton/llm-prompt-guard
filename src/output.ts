@@ -406,7 +406,7 @@ const EXFIL_PATTERNS: Array<{
   // receive both findings — no de-duplication is applied.
   {
     type: "outbound-url",
-    pattern: /(?:https?:(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi,
+    pattern: /(?:(?:https?|ftps?|wss?|sftp):(?:\/\/|\\+|[/\\]*(?=[A-Za-z0-9]))|\/\/(?=[A-Za-z0-9]))[^\s)"'<>]+/gi,
   },
 ];
 
@@ -420,7 +420,7 @@ const EXFIL_PATTERNS: Array<{
  *   (`api.example.com`, `www.example.com`), NOT the apex
  *   `example.com`. Use this when you want the apex to remain flagged.
  */
-function hostMatchesAllowlist(host: string, allowlist: string[]): boolean {
+export function hostMatchesAllowlist(host: string, allowlist: string[]): boolean {
   const lowerHost = host.toLowerCase();
   for (const entry of allowlist) {
     const lowerEntryRaw = entry.toLowerCase();

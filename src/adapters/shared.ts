@@ -27,9 +27,17 @@ export function resolveGuard(
   return guard ?? createGuard();
 }
 
-/** A pattern matched — the one detection signal every adapter blocks/flags on. */
+/**
+ * A pattern matched — the one detection signal every adapter blocks/flags on.
+ * Input cut at the analysis cap also counts: the tail was never scanned, so
+ * padding past the cap would otherwise smuggle an injection through.
+ */
 export function isDetected(result: AssessResult): boolean {
-  return result.patternsDetected > 0 || result.hasHighSeverity;
+  return (
+    result.patternsDetected > 0 ||
+    result.hasHighSeverity ||
+    result.signals.truncatedForAnalysis
+  );
 }
 
 /** An exfiltration-shape finding — the output-side counterpart of {@link isDetected}. */

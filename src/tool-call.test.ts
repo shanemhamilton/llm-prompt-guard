@@ -422,3 +422,13 @@ describe("scanToolCall — ReDoS resistance", () => {
     expect(elapsed).toBeLessThan(MAX_SCAN_MS);
   });
 });
+
+describe("scanToolCall — non-http schemes", () => {
+  test.each(["ftp://evil.com/?k=1", "wss://evil.com/socket", "sftp://evil.com/x"])(
+    "flags %s",
+    (url) => {
+      const result = scanToolCall("fetch", { url });
+      expect(result.findings.map((f) => f.type)).toContain("unapproved-origin");
+    }
+  );
+});

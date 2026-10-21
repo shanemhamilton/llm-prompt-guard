@@ -93,3 +93,19 @@ describe("guardHono", () => {
     expect(c.json).toHaveBeenCalledWith(expect.objectContaining({ error: "prompt_rejected" }), 400);
   });
 });
+
+describe("guardHono — oracle and requireField", () => {
+  test("the 400 body carries no detection reasons", async () => {
+    const { c } = fakeContext({ prompt: INJECTION });
+    await guardHono({ mode: "block" })(c, jest.fn());
+    expect(c.json).toHaveBeenCalledWith({ error: "prompt_rejected" }, 400);
+  });
+
+  test("requireField rejects a body without the field", async () => {
+    const { c } = fakeContext({ other: "x" });
+    const next = jest.fn();
+    await guardHono({ requireField: true })(c, next);
+    expect(c.json).toHaveBeenCalledWith({ error: "prompt_rejected" }, 400);
+    expect(next).not.toHaveBeenCalled();
+  });
+});
